@@ -1,5 +1,6 @@
 import gym
 
+
 # Do not modify the input of the 'act' function and the '__init__' function. 
 class Agent(object):
     """Agent that acts randomly."""
