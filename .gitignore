@@ -4,6 +4,7 @@ venv/
 env/
 .env/
 .venv/
+.gitignore
 
 # Python cache files
 __pycache__/
@@ -13,7 +14,7 @@ __pycache__/
 
 # Checkpoints and model files
 checkpoints/
-*.pth
+
 
 # Logs and output files
 logs/
@@ -31,5 +32,3 @@ logs/
 .DS_Store
 Thumbs.db
 
-#checkpoint
-checkpoints/

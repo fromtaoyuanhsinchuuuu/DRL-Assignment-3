@@ -9,7 +9,7 @@ class Agent(object):
     """Agent that uses trained DQN model to select actions."""
     def __init__(self):
         self.action_space = gym.spaces.Discrete(12)
-        self.device = "cpu
+        self.device = "cpu"
         # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f'device {self.device}')
 
