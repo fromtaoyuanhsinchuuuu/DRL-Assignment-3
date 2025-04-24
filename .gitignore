@@ -1,0 +1,35 @@
+# Python virtual environments
+.drl-venv/
+venv/
+env/
+.env/
+.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Checkpoints and model files
+checkpoints/
+*.pth
+
+# Logs and output files
+logs/
+*.log
+*.csv
+*.png
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+#checkpoint
+checkpoints/
