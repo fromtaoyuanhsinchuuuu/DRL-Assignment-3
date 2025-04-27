@@ -14,7 +14,7 @@ TAU = 1e-3  # Soft update parameter
 # Epsilon-greedy exploration
 EPSILON_START = 1.0
 EPSILON_MIN = 0.01
-EPSILON_DECAY = 0.999  # Slower decay for Mario
+EPSILON_DECAY = 0.995 # Slower decay for Mario
 
 # Prioritized Experience Replay parameters
 BUFFER_CAPACITY = 100000
@@ -24,9 +24,9 @@ PER_BETA_START = 0.4  # Initial importance sampling weight
 PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 
 # Training settings
-LEARNING_START_STEP = 10000  # Steps to fill buffer before learning starts
+LEARNING_START_STEP = 1000  # Steps to fill buffer before learning starts
 TRAIN_FREQ_STEP = 4  # Train every 4 steps
-TARGET_UPDATE_FREQ_STEP = 1000  # Target network update frequency
+TARGET_UPDATE_FREQ_STEP = 1  # Target network update frequency
 SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
 
 # Model settings

@@ -83,6 +83,8 @@ class DDQN_PER_Agent:
         Returns:
             Selected action
         """
+        if use_epsilon and random.random() < self.epsilon:
+            return random.randrange(self.action_size)
         # Convert state to tensor
         # Handle LazyFrames from FrameStack wrapper
         if hasattr(state, '__array__'):
@@ -103,13 +105,8 @@ class DDQN_PER_Agent:
         self.q_net.eval()
         with torch.no_grad():
             q_values = self.q_net(state)
-        self.q_net.train()
 
-        # Epsilon-greedy action selection
-        if use_epsilon and random.random() < self.epsilon:
-            return random.randrange(self.action_size)
-        else:
-            return q_values.argmax().item()
+        return q_values.argmax().item()
 
     def update_target_network(self, update_type='soft'):
         """
@@ -150,6 +147,9 @@ class DDQN_PER_Agent:
         """
         Train the agent using a batch of experiences from the replay buffer.
         """
+
+        self.q_net.train()
+
         # Sample experiences from replay buffer
         experiences, indices, is_weights = self.replay_buffer.sample(self.batch_size)
 

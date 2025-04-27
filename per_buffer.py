@@ -90,6 +90,13 @@ class SumTree:
                 parent_idx = right_child_idx
 
         data_idx = tree_idx - self.capacity + 1
+
+        # Ensure data_idx is within valid range
+        if data_idx < 0:
+            data_idx = 0
+        elif data_idx >= self.capacity:
+            data_idx = self.capacity - 1
+
         return tree_idx, self.tree[tree_idx], data_idx
 
     def total_priority(self):
@@ -215,8 +222,35 @@ class PrioritizedReplayBuffer:
             s = random.uniform(a, b)
 
             _, priority, data_idx = self.tree.get_leaf(s)  # We don't need tree_idx here
-            indices.append(data_idx)
-            priorities.append(priority)
+
+            # Only add indices that are within the valid range (< self.size)
+            if data_idx < self.size:
+                indices.append(data_idx)
+                priorities.append(priority)
+            else:
+                # If we get an invalid index, try again with a different random value
+                # We'll try up to 5 times to find a valid index within this segment
+                valid_idx_found = False
+                for _ in range(5):  # Try 5 times
+                    s = random.uniform(a, b)
+                    _, priority, data_idx = self.tree.get_leaf(s)
+                    if data_idx < self.size:
+                        indices.append(data_idx)
+                        priorities.append(priority)
+                        valid_idx_found = True
+                        break
+
+                # If we still couldn't find a valid index, print a warning
+                if not valid_idx_found:
+                    print(f"Warning: Could not find valid index in segment {i}. Tree size: {self.tree.size}, Buffer size: {self.size}")
+
+        # If we don't have enough indices after filtering, return None
+        if len(indices) < batch_size // 2:  # If we have less than half the requested batch size
+            print(f"Warning: Not enough valid indices after filtering. Have {len(indices)}, need {batch_size}.")
+            if len(indices) == 0:
+                print("Error: No valid indices found.")
+                return None, None, None
+            # We'll continue with the indices we have, but the batch size will be smaller
 
         # Calculate importance sampling weights
         sampling_probabilities = np.array(priorities) / self.tree.total_priority()
@@ -229,7 +263,7 @@ class PrioritizedReplayBuffer:
         # Get experiences from memory
         experiences = [self.memory[idx] for idx in indices]
 
-        # Filter out None values
+        # Filter out None values and invalid experiences
         valid_experiences = []
         valid_indices = []
         valid_weights = []
@@ -241,8 +275,8 @@ class PrioritizedReplayBuffer:
                 valid_weights.append(is_weights[i])
 
         # If we don't have enough valid experiences, return None
-        if len(valid_experiences) < batch_size:
-            print(f"Warning: Only found {len(valid_experiences)} valid experiences out of {batch_size} requested.")
+        if len(valid_experiences) < batch_size // 2:  # If we have less than half the requested batch size
+            print(f"Warning: Only found {len(valid_experiences)} valid experiences out of {len(indices)} indices after filtering.")
             if len(valid_experiences) == 0:
                 print("Error: No valid experiences found.")
                 return None, None, None
@@ -250,30 +284,39 @@ class PrioritizedReplayBuffer:
         # Convert to tensors
         # Stack states and next_states with shape (batch_size, frames, height, width, channels)
         # We need to be careful with the stacking to maintain the batch dimension
-        states_list = [torch.from_numpy(e.state).float() for e in valid_experiences]
-        next_states_list = [torch.from_numpy(e.next_state).float() for e in valid_experiences]
+        try:
+            states_list = [torch.from_numpy(e.state).float() for e in valid_experiences]
+            next_states_list = [torch.from_numpy(e.next_state).float() for e in valid_experiences]
 
-        # Stack the tensors along the batch dimension
-        states = torch.stack(states_list)
-        next_states = torch.stack(next_states_list)
+            # Stack the tensors along the batch dimension
+            states = torch.stack(states_list)
+            next_states = torch.stack(next_states_list)
 
-        # Remove the channel dimension (which is 1) to get shape (batch_size, frames, height, width)
-        states = states.squeeze(-1)
-        next_states = next_states.squeeze(-1)
+            # Remove the channel dimension (which is 1) to get shape (batch_size, frames, height, width)
+            states = states.squeeze(-1)
+            next_states = next_states.squeeze(-1)
 
-        # Normalize
-        states = states / 255.0
-        next_states = next_states / 255.0
+            # Normalize
+            states = states / 255.0
+            next_states = next_states / 255.0
 
-        # Convert other experience components to tensors
-        actions = torch.from_numpy(np.vstack([e.action for e in valid_experiences])).long()
-        rewards = torch.from_numpy(np.vstack([e.reward for e in valid_experiences])).float()
-        dones = torch.from_numpy(np.vstack([e.done for e in valid_experiences]).astype(np.uint8)).float()
+            # Convert other experience components to tensors
+            actions = torch.from_numpy(np.vstack([e.action for e in valid_experiences])).long()
+            rewards = torch.from_numpy(np.vstack([e.reward for e in valid_experiences])).float()
+            dones = torch.from_numpy(np.vstack([e.done for e in valid_experiences]).astype(np.uint8)).float()
 
-        # Convert valid_weights to PyTorch tensor directly
-        valid_weights = torch.FloatTensor(valid_weights).unsqueeze(1)  # Shape: (batch_size, 1)
+            # Convert valid_weights to PyTorch tensor directly
+            valid_weights = torch.FloatTensor(valid_weights).unsqueeze(1)  # Shape: (batch_size, 1)
 
-        return (states, actions, rewards, next_states, dones), valid_indices, valid_weights
+            # Print a warning if we're returning fewer experiences than requested
+            actual_batch_size = len(valid_experiences)
+            if actual_batch_size < batch_size:
+                print(f"Note: Returning {actual_batch_size} experiences instead of the requested {batch_size}.")
+
+            return (states, actions, rewards, next_states, dones), valid_indices, valid_weights
+        except Exception as e:
+            print(f"Error converting experiences to tensors: {e}")
+            return None, None, None
 
     def update_priority(self, idx, error):
         """

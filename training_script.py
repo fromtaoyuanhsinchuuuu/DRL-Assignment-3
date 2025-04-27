@@ -28,7 +28,6 @@ def main():
     action_size = env.action_space.n
     print(f"State shape: {state_shape}, Action size: {action_size}")
 
-    # return
     # Create the agent
     agent = DDQN_PER_Agent(
         state_shape=state_shape,
@@ -46,14 +45,72 @@ def main():
         epsilon_decay=config.EPSILON_DECAY,
         device=config.DEVICE
     )
-
-    # Initialize training metrics
+    
+    # Load the latest checkpoint if available
+    start_episode = 1
     rewards_history = []
     avg_rewards_history = []
     steps_history = []
     epsilon_history = []
-    flags_gotten = 0  # Counter for flags gotten
-    max_x_position = 0  # Track maximum x position reached
+    flags_gotten = 0
+    max_x_position = 0
+    
+    if os.path.exists('checkpoints'):
+        checkpoint_files = [f for f in os.listdir('checkpoints') if f.startswith('mario_ddqn_per_ep') and f.endswith('.pth')]
+        if checkpoint_files:
+            # Extract episode numbers and find the latest
+            episode_nums = [int(f.split('ep')[1].split('.')[0]) for f in checkpoint_files]
+            latest_episode = max(episode_nums)
+            latest_checkpoint = f"checkpoints/mario_ddqn_per_ep{latest_episode}.pth"
+            
+            print(f"Loading latest checkpoint: {latest_checkpoint}")
+            checkpoint = torch.load(latest_checkpoint)
+            
+            # Load model weights and optimizer state
+            agent.q_net.load_state_dict(checkpoint['q_net_state_dict'])
+            agent.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+            agent.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            agent.epsilon = checkpoint['epsilon']
+            
+            # Load training history if available
+            if 'rewards_history' in checkpoint:
+                rewards_history = checkpoint['rewards_history']
+            if 'avg_rewards_history' in checkpoint:
+                avg_rewards_history = checkpoint['avg_rewards_history']
+            
+            # Continue from the next episode
+            start_episode = latest_episode + 1
+            
+            # Try to load additional metrics from CSV if available
+            try:
+                if os.path.exists('logs/training_progress.csv'):
+                    with open('logs/training_progress.csv', 'r') as f:
+                        reader = csv.reader(f)
+                        next(reader)  # Skip header
+                        for row in reader:
+                            episode_num = int(row[0])
+                            if episode_num == latest_episode:
+                                # Get the latest metrics
+                                max_x_position = float(row[5])
+                                flags_gotten = int(row[7])
+                                break
+            except Exception as e:
+                print(f"Error loading metrics from CSV: {e}")
+            
+            print(f"Resuming training from episode {start_episode}")
+            print(f"Current epsilon: {agent.epsilon:.4f}")
+            print(f"Max X position so far: {max_x_position}")
+            print(f"Flags gotten so far: {flags_gotten}")
+    
+    # Initialize training metrics if not loaded from checkpoint
+    if not rewards_history:
+        rewards_history = []
+    if not avg_rewards_history:
+        avg_rewards_history = []
+    if not steps_history:
+        steps_history = []
+    if not epsilon_history:
+        epsilon_history = []
 
     # For tracking average reward over last 100 episodes
     recent_rewards = deque(maxlen=100)
@@ -79,7 +136,7 @@ def main():
     start_time = time.time()
 
     # Create progress bar with tqdm
-    progress_bar = tqdm(range(1, config.NUM_EPISODES + 1), desc="Training", unit="episode")
+    progress_bar = tqdm(range(start_episode, config.NUM_EPISODES + 1), desc="Training", unit="episode")
 
     for episode in progress_bar:
         # Reset environment and get initial state
@@ -146,13 +203,9 @@ def main():
                     # Track Mario's x position
                     if 'x_pos' in info:
                         episode_max_x = max(episode_max_x, info['x_pos'])
-                except ValueError as e:
+                except Exception as e:
                     # If we get a ValueError, the environment might be done
-                    if done:
-                        break
-                    progress_bar.write(f"Error stepping environment: {e}")
                     break
-
             # Store experience and train
             agent.step(state, action, reward, next_state, done, train_freq=config.TRAIN_FREQ_STEP)
 
@@ -163,17 +216,19 @@ def main():
             total_steps += 1
 
             # Update target network periodically
+            # soft update, update freq == 1
             if total_steps % config.TARGET_UPDATE_FREQ_STEP == 0:
                 agent.update_target_network()
 
-            # Decay epsilon
-            if agent.epsilon > config.EPSILON_MIN:
-                agent.epsilon *= config.EPSILON_DECAY
 
             # Break if episode is done
             if done:
                 break
 
+        # Decay epsilon
+        if agent.epsilon > config.EPSILON_MIN:
+            agent.epsilon *= config.EPSILON_DECAY
+            
         # Record metrics
         rewards_history.append(total_reward)
         recent_rewards.append(total_reward)
@@ -187,7 +242,7 @@ def main():
 
         # Print progress information if Mario made significant progress
         if episode_max_x > 50:  # Only print if Mario moved significantly
-            progress_bar.write(f"Mario reached x position {episode_max_x} in episode {episode} (max ever: {max_x_position})")
+            progress_bar.write(f"Mario reached x position {episode_max_x} in episode {episode} | Steps: {episode_steps} | Reward: {total_reward:.2f} (max ever: {max_x_position})")
 
         # Log progress to CSV file
         with open(progress_file, 'a', newline='') as f:
@@ -201,6 +256,8 @@ def main():
             'reward': f"{total_reward:.2f}",
             'avg_reward': f"{avg_reward:.2f}",
             'epsilon': f"{agent.epsilon:.4f}",
+            'alpha': f"{config.PER_ALPHA:.2f}",
+            'beta': f"{agent.replay_buffer.beta:.2f}",
             'buffer': len(agent.replay_buffer),
             'flags': flags_gotten,
             'max_x': max_x_position,
@@ -214,6 +271,8 @@ def main():
                   f"Reward: {total_reward:.2f} | "
                   f"Avg Reward (100): {avg_reward:.2f} | "
                   f"Epsilon: {agent.epsilon:.4f} | "
+                  f"Alpha: {config.PER_ALPHA:.2f} | "
+                  f"Beta: {agent.replay_buffer.beta:.2f} | "
                   f"Buffer Size: {len(agent.replay_buffer)} | "
                   f"Flags Gotten: {flags_gotten} | "
                   f"Max X: {max_x_position} | "
