@@ -5,7 +5,6 @@ import os
 from dueling_qnet import DuelingMarioQNet
 
 
-torch.serialization.add_safe_globals([np.core.multiarray.scalar])
 
 # Do not modify the input of the 'act' function and the '__init__' function.
 class Agent(object):
@@ -28,7 +27,7 @@ class Agent(object):
         if self.model_path:
             try:
                 # Load the model weights
-                state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
+                state_dict = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
                 # Load the model with strict=False to allow for architecture differences
                 self.q_net.load_state_dict(state_dict, strict=False)
@@ -172,8 +171,8 @@ class Agent(object):
     def act(self, observation):
         # Print action count every 100 actions
         self.action_count += 1
-        if self.action_count % 100 == 0:
-            print(f"Action count: {self.action_count}")
+        # if self.action_count % 100 == 0:
+        #     print(f"Action count: {self.action_count}")
 
         # If no model is loaded, use random actions
         if not self.model_loaded:
