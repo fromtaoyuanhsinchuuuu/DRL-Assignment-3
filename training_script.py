@@ -43,9 +43,10 @@ def main():
         epsilon_start=config.EPSILON_START,
         epsilon_min=config.EPSILON_MIN,
         epsilon_decay=config.EPSILON_DECAY,
+        n_step=config.N_STEP,
         device=config.DEVICE
     )
-    
+
     # Load the latest checkpoint if available
     start_episode = 1
     rewards_history = []
@@ -54,7 +55,7 @@ def main():
     epsilon_history = []
     flags_gotten = 0
     max_x_position = 0
-    
+
     if os.path.exists('checkpoints'):
         checkpoint_files = [f for f in os.listdir('checkpoints') if f.startswith('mario_ddqn_per_ep') and f.endswith('.pth')]
         if checkpoint_files:
@@ -62,25 +63,25 @@ def main():
             episode_nums = [int(f.split('ep')[1].split('.')[0]) for f in checkpoint_files]
             latest_episode = max(episode_nums)
             latest_checkpoint = f"checkpoints/mario_ddqn_per_ep{latest_episode}.pth"
-            
+
             print(f"Loading latest checkpoint: {latest_checkpoint}")
             checkpoint = torch.load(latest_checkpoint)
-            
+
             # Load model weights and optimizer state
             agent.q_net.load_state_dict(checkpoint['q_net_state_dict'])
             agent.target_net.load_state_dict(checkpoint['target_net_state_dict'])
             agent.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             agent.epsilon = checkpoint['epsilon']
-            
+
             # Load training history if available
             if 'rewards_history' in checkpoint:
                 rewards_history = checkpoint['rewards_history']
             if 'avg_rewards_history' in checkpoint:
                 avg_rewards_history = checkpoint['avg_rewards_history']
-            
+
             # Continue from the next episode
             start_episode = latest_episode + 1
-            
+
             # Try to load additional metrics from CSV if available
             try:
                 if os.path.exists('logs/training_progress.csv'):
@@ -96,12 +97,12 @@ def main():
                                 break
             except Exception as e:
                 print(f"Error loading metrics from CSV: {e}")
-            
+
             print(f"Resuming training from episode {start_episode}")
             print(f"Current epsilon: {agent.epsilon:.4f}")
             print(f"Max X position so far: {max_x_position}")
             print(f"Flags gotten so far: {flags_gotten}")
-    
+
     # Initialize training metrics if not loaded from checkpoint
     if not rewards_history:
         rewards_history = []
@@ -228,7 +229,7 @@ def main():
         # Decay epsilon
         if agent.epsilon > config.EPSILON_MIN:
             agent.epsilon *= config.EPSILON_DECAY
-            
+
         # Record metrics
         rewards_history.append(total_reward)
         recent_rewards.append(total_reward)

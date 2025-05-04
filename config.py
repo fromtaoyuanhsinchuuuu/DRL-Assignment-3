@@ -10,10 +10,11 @@ NUM_EPISODES = 10000  # Mario needs more training episodes
 GAMMA = 0.99  # Discount factor
 LR = 5e-5  # Learning rate (smaller for Mario)
 TAU = 1e-3  # Soft update parameter
+N_STEP = 10  # Number of steps for N-step bootstrapping
 
 # Epsilon-greedy exploration
 EPSILON_START = 1.0
-EPSILON_MIN = 0.01
+EPSILON_MIN = 0.1  # Increased to maintain exploration
 EPSILON_DECAY = 0.995 # Slower decay for Mario
 
 # Prioritized Experience Replay parameters
@@ -26,8 +27,13 @@ PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 # Training settings
 LEARNING_START_STEP = 1000  # Steps to fill buffer before learning starts
 TRAIN_FREQ_STEP = 4  # Train every 4 steps
-TARGET_UPDATE_FREQ_STEP = 1  # Target network update frequency
+TARGET_UPDATE_FREQ_STEP = 10000  # Target network update frequency
 SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
+TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
+
+# Checkpoint settings
+LOAD_CHECKPOINT_EPISODE = 2550  # Episode to load checkpoint from (0 = don't load)
+RESTART_EPSILON = 0.1  # Epsilon value to use when restarting training
 
 # Model settings
 MODEL_SAVE_PATH = 'mario_ddqn_per_qnet.pth'

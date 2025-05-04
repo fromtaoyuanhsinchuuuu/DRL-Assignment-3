@@ -6,19 +6,20 @@ import numpy as np
 import random
 from mario_qnet import MarioQNet
 from per_buffer import PrioritizedReplayBuffer
+import config
 
 class DDQN_PER_Agent:
     """
-    Double DQN agent with Prioritized Experience Replay for Super Mario Bros.
+    Double DQN agent with Prioritized Experience Replay and N-step bootstrapping for Super Mario Bros.
     """
     def __init__(self, state_shape, action_size, seed=42,
                  buffer_capacity=50000, batch_size=32, gamma=0.99,
                  lr=5e-5, tau=1e-3, per_alpha=0.6, per_beta_start=0.4,
                  per_beta_frames=1000000, epsilon_start=1.0,
                  epsilon_min=0.01, epsilon_decay=0.9999,
-                 device="cuda" if torch.cuda.is_available() else "cpu"):
+                 n_step=3, device="cuda" if torch.cuda.is_available() else "cpu"):
         """
-        Initialize the DDQN+PER agent.
+        Initialize the DDQN+PER agent with N-step bootstrapping.
 
         Args:
             state_shape: Shape of the state (expected to be (4, 84, 84))
@@ -35,6 +36,7 @@ class DDQN_PER_Agent:
             epsilon_start: Initial epsilon for exploration
             epsilon_min: Minimum epsilon value
             epsilon_decay: Epsilon decay rate
+            n_step: Number of steps for N-step bootstrapping
             device: Device to run the model on (cuda or cpu)
         """
         self.state_shape = state_shape
@@ -45,6 +47,7 @@ class DDQN_PER_Agent:
         self.lr = lr
         self.tau = tau
         self.device = device
+        self.n_step = n_step
 
         # Epsilon parameters for exploration
         self.epsilon = epsilon_start
@@ -60,9 +63,14 @@ class DDQN_PER_Agent:
         # Initialize optimizer
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
 
-        # Initialize replay buffer with PER
+        # Initialize replay buffer with PER and N-step
         beta_increment = (1.0 - per_beta_start) / per_beta_frames
-        self.replay_buffer = PrioritizedReplayBuffer(buffer_capacity, seed)
+        self.replay_buffer = PrioritizedReplayBuffer(
+            capacity=buffer_capacity,
+            seed=seed,
+            n_step=n_step,
+            gamma=gamma
+        )
         self.replay_buffer.alpha = per_alpha
         self.replay_buffer.beta = per_beta_start
         self.replay_buffer.beta_increment_per_sampling = beta_increment
@@ -70,7 +78,7 @@ class DDQN_PER_Agent:
         # Initialize time step counter
         self.t_step = 0
 
-        print(f"DDQN+PER Agent initialized on device: {device}")
+        print(f"DDQN+PER Agent with {n_step}-step bootstrapping initialized on device: {device}")
 
     def get_action(self, state, use_epsilon=True):
         """
@@ -146,8 +154,8 @@ class DDQN_PER_Agent:
     def train(self):
         """
         Train the agent using a batch of experiences from the replay buffer.
+        Uses N-step returns for more efficient learning.
         """
-
         self.q_net.train()
 
         # Sample experiences from replay buffer
@@ -174,8 +182,11 @@ class DDQN_PER_Agent:
             best_actions_next = self.q_net(next_states).argmax(dim=1, keepdim=True)
             # Evaluate those actions using target network
             Q_targets_next = self.target_net(next_states).gather(1, best_actions_next)
+
             # Compute Q targets for current states
-            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+            # For N-step returns, we need to use gamma^N for the bootstrap value
+            # The rewards already include the discounted sum of N-step rewards
+            Q_targets = rewards + ((self.gamma ** self.n_step) * Q_targets_next * (1 - dones))
 
         # Get expected Q values from online network
         Q_expected = self.q_net(states).gather(1, actions)
@@ -197,3 +208,32 @@ class DDQN_PER_Agent:
         # Update priorities in the replay buffer
         for idx, error in zip(indices, td_errors):
             self.replay_buffer.update_priority(idx, error)
+
+    def save(self, path):
+        """
+        Save the agent's state.
+
+        Args:
+            path: Path to save the model
+        """
+        torch.save({
+            'q_net_state_dict': self.q_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon,
+            't_step': self.t_step,
+        }, path)
+
+    def load(self, path):
+        """
+        Load the agent's state.
+
+        Args:
+            path: Path to load the model from
+        """
+        checkpoint = torch.load(path, map_location=self.device)
+        self.q_net.load_state_dict(checkpoint['q_net_state_dict'])
+        self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epsilon = checkpoint.get('epsilon', self.epsilon)
+        self.t_step = checkpoint.get('t_step', 0)

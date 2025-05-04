@@ -2,11 +2,11 @@ import gym
 import torch
 import numpy as np
 import os
-from mario_qnet import MarioQNet
+from dueling_qnet import DuelingMarioQNet
 
 # Do not modify the input of the 'act' function and the '__init__' function.
 class Agent(object):
-    """Agent that uses trained DQN model to select actions."""
+    """Agent that uses trained Dueling DQN model to select actions."""
     def __init__(self):
         self.action_space = gym.spaces.Discrete(12)
         self.device = "cpu"
@@ -16,8 +16,8 @@ class Agent(object):
         # Define state shape for Mario environment (4 stacked frames of 84x84 grayscale images)
         self.state_shape = (4, 84, 84, 1)
 
-        # Initialize Q-network
-        self.q_net = MarioQNet(self.state_shape, self.action_space.n).to(self.device)
+        # Initialize Dueling Q-network
+        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n).to(self.device)
 
         # Try to load the latest model weights
         self.model_loaded = False
@@ -27,23 +27,8 @@ class Agent(object):
                 # Load the model weights
                 state_dict = torch.load(self.model_path, map_location=self.device)
 
-                # Check if the model was trained with a different action size
-                if 'fc.2.weight' in state_dict and state_dict['fc.2.weight'].size(0) != self.action_space.n:
-                    print(f"Model was trained with {state_dict['fc.2.weight'].size(0)} actions, but environment has {self.action_space.n} actions.")
-                    print("Only loading convolutional layers and first fully connected layer.")
-
-                    # Create a new state dict with only the compatible layers
-                    new_state_dict = {}
-                    for key, value in state_dict.items():
-                        if 'fc.2' not in key:  # Skip the final layer
-                            new_state_dict[key] = value
-
-                    # Load the compatible layers
-                    self.q_net.load_state_dict(new_state_dict, strict=False)
-                else:
-                    # Load the full model
-                    self.q_net.load_state_dict(state_dict)
-
+                # Load the model with strict=False to allow for architecture differences
+                self.q_net.load_state_dict(state_dict, strict=False)
                 self.model_loaded = True
                 print(f"Loaded model weights from {self.model_path}")
             except Exception as e:
@@ -56,36 +41,127 @@ class Agent(object):
 
     def _find_latest_model(self):
         """Find the latest model weights file in the checkpoints directory."""
-        # Check for the main model file first
+        # First, check for the n-step model file (highest priority)
+        if os.path.exists("mario_dueling_nstep_qnet.pth"):
+            print("Found n-step model file: mario_dueling_nstep_qnet.pth")
+            return "mario_dueling_nstep_qnet.pth"
+
+        # Check for n-step checkpoint files
+        if os.path.exists("dueling_nstep_checkpoints"):
+            print("Checking dueling_nstep_checkpoints directory...")
+            # Find all Q-network weight files
+            qnet_files = [f for f in os.listdir("dueling_nstep_checkpoints") if f.startswith("mario_dueling_nstep_qnet_ep") and f.endswith(".pth")]
+
+            if qnet_files:
+                # Extract episode numbers and find the latest one
+                latest_file = None
+                latest_episode = -1
+
+                for file in qnet_files:
+                    try:
+                        # Extract episode number from filename
+                        episode = int(file.split("_ep")[1].split(".")[0])
+                        if episode > latest_episode:
+                            latest_episode = episode
+                            latest_file = file
+                    except:
+                        continue
+
+                if latest_file:
+                    print(f"Found latest n-step model: {latest_file}")
+                    return os.path.join("dueling_nstep_checkpoints", latest_file)
+
+            # Also check for full checkpoint files which contain the state dict
+            checkpoint_files = [f for f in os.listdir("dueling_nstep_checkpoints") if f.startswith("mario_dueling_nstep_ep") and f.endswith(".pth")]
+
+            if checkpoint_files:
+                print("Found full n-step checkpoint files. Will try to extract weights.")
+                # Sort by episode number to find the latest
+                latest_file = None
+                latest_episode = -1
+
+                for file in checkpoint_files:
+                    try:
+                        # Extract episode number from filename
+                        episode = int(file.split("ep")[1].split(".")[0])
+                        if episode > latest_episode:
+                            latest_episode = episode
+                            latest_file = file
+                    except:
+                        continue
+
+                if latest_file:
+                    full_path = os.path.join("dueling_nstep_checkpoints", latest_file)
+                    print(f"Found latest n-step checkpoint: {full_path}")
+
+                    # Try to extract q_net_state_dict from the checkpoint
+                    try:
+                        checkpoint = torch.load(full_path, map_location=self.device)
+                        if 'q_net_state_dict' in checkpoint:
+                            print("Extracting q_net_state_dict from checkpoint...")
+                            # Save the extracted state dict to a temporary file
+                            temp_path = "temp_extracted_qnet.pth"
+                            torch.save(checkpoint['q_net_state_dict'], temp_path)
+                            return temp_path
+                    except Exception as e:
+                        print(f"Error extracting state dict from checkpoint: {e}")
+
+        # Fall back to regular dueling model if n-step not found
+        print("No n-step model found. Falling back to regular dueling model.")
+        if os.path.exists("mario_dueling_ddqn_per_qnet.pth"):
+            return "mario_dueling_ddqn_per_qnet.pth"
+
+        # Check for regular dueling checkpoint files
+        if os.path.exists("dueling_checkpoints"):
+            # Find all Q-network weight files
+            qnet_files = [f for f in os.listdir("dueling_checkpoints") if f.startswith("mario_dueling_qnet_ep") and f.endswith(".pth")]
+
+            if qnet_files:
+                # Extract episode numbers and find the latest one
+                latest_file = None
+                latest_episode = -1
+
+                for file in qnet_files:
+                    try:
+                        # Extract episode number from filename (format: mario_dueling_qnet_ep{episode}.pth)
+                        episode = int(file.split("_ep")[1].split(".")[0])
+                        if episode > latest_episode:
+                            latest_episode = episode
+                            latest_file = file
+                    except:
+                        continue
+
+                if latest_file:
+                    return os.path.join("dueling_checkpoints", latest_file)
+
+        # If no dueling model found, try to load regular model
         if os.path.exists("mario_ddqn_per_qnet.pth"):
+            print("No dueling model found. Trying to load regular model.")
             return "mario_ddqn_per_qnet.pth"
 
-        # Check for checkpoint files
-        if not os.path.exists("checkpoints"):
-            return None
+        # Check regular checkpoints
+        if os.path.exists("checkpoints"):
+            # Find all Q-network weight files
+            qnet_files = [f for f in os.listdir("checkpoints") if f.startswith("mario_qnet_ep") and f.endswith(".pth")]
 
-        # Find all Q-network weight files
-        qnet_files = [f for f in os.listdir("checkpoints") if f.startswith("mario_qnet_ep") and f.endswith(".pth")]
+            if qnet_files:
+                # Extract episode numbers and find the latest one
+                latest_file = None
+                latest_episode = -1
 
-        if not qnet_files:
-            return None
+                for file in qnet_files:
+                    try:
+                        # Extract episode number from filename (format: mario_qnet_ep{episode}.pth)
+                        episode = int(file.split("_ep")[1].split(".")[0])
+                        if episode > latest_episode:
+                            latest_episode = episode
+                            latest_file = file
+                    except:
+                        continue
 
-        # Extract episode numbers and find the latest one
-        latest_file = None
-        latest_episode = -1
-
-        for file in qnet_files:
-            try:
-                # Extract episode number from filename (format: mario_qnet_ep{episode}.pth)
-                episode = int(file.split("_ep")[1].split(".")[0])
-                if episode > latest_episode:
-                    latest_episode = episode
-                    latest_file = file
-            except:
-                continue
-
-        if latest_file:
-            return os.path.join("checkpoints", latest_file)
+                if latest_file:
+                    print("Loading regular model into dueling architecture.")
+                    return os.path.join("checkpoints", latest_file)
 
         return None
 
@@ -104,7 +180,6 @@ class Agent(object):
             # Handle LazyFrames from FrameStack wrapper
             if hasattr(observation, '__array__'):
                 observation = np.array(observation)
-
 
             # Convert to tensor
             state = torch.from_numpy(observation).float()
@@ -139,7 +214,6 @@ class Agent(object):
 
                 # Replace the original state with the processed one
                 state = processed_state
-
 
             # Handle our training environment format
             elif len(state.shape) == 4 and state.shape[0] == 4:  # (4, 84, 84, 1) - stacked frames
@@ -186,6 +260,7 @@ class Agent(object):
                 pass
 
             # Normalize (if not already done)
+            # This normalization is done here in the agent, not in the network
             if state.max() > 1.0:
                 state = state / 255.0
 

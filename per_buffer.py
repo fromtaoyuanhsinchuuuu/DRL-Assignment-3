@@ -2,7 +2,7 @@
 import random
 import numpy as np
 import torch
-from collections import namedtuple
+from collections import namedtuple, deque
 
 class SumTree:
     """
@@ -112,6 +112,7 @@ class SumTree:
 class PrioritizedReplayBuffer:
     """
     Prioritized Experience Replay buffer for storing and sampling experiences.
+    Supports N-step returns for more efficient learning.
     """
     # PER hyperparameters
     epsilon = 0.01  # Small constant to ensure non-zero priority
@@ -120,13 +121,15 @@ class PrioritizedReplayBuffer:
     beta_increment_per_sampling = 0.001  # Beta annealing
     abs_err_upper = 1.0  # Clipping for priorities
 
-    def __init__(self, capacity, seed=None):
+    def __init__(self, capacity, seed=None, n_step=1, gamma=0.99):
         """
         Initialize the buffer.
 
         Args:
             capacity: Maximum number of experiences to store
             seed: Random seed for reproducibility
+            n_step: Number of steps for N-step returns
+            gamma: Discount factor for N-step returns
         """
         if seed is not None:
             random.seed(seed)
@@ -139,6 +142,11 @@ class PrioritizedReplayBuffer:
         self.size = 0
         self.capacity = capacity
 
+        # N-step return parameters
+        self.n_step = n_step
+        self.gamma = gamma
+        self.n_step_buffer = deque(maxlen=n_step)
+
     def _get_priority(self, error):
         """
         Convert TD error to priority.
@@ -149,9 +157,61 @@ class PrioritizedReplayBuffer:
         Returns:
             Priority value
         """
-        # Clip error and convert to priority
-        error = min(error, self.abs_err_upper)
-        return (error + self.epsilon) ** self.alpha
+        # First apply power, then clip
+        p = (abs(error) + self.epsilon) ** self.alpha
+        return min(p, self.abs_err_upper)
+
+    def _get_n_step_info(self):
+        """
+        Get the n-step reward, next state, done flag, and actual discount factor.
+
+        Returns:
+            n_step_reward: Sum of discounted rewards over n steps
+            n_step_next_state: State after n steps (or terminal state)
+            n_step_done: Whether a terminal state was reached within n steps
+            actual_discount: The actual discount factor to use (gamma^k where k is the actual number of steps)
+        """
+        # Get the first experience in the buffer
+        first_experience = self.n_step_buffer[0]
+
+        # Initialize n-step return with the first reward
+        n_step_reward = first_experience.reward
+        # Default next state and done flag
+        n_step_next_state = first_experience.next_state
+        n_step_done = first_experience.done
+
+        # Track the actual number of steps (for discount calculation)
+        actual_steps = 1
+
+        # If the first experience is already terminal, return early
+        if n_step_done:
+            return n_step_reward, n_step_next_state, n_step_done, 0.0  # No discount for terminal state
+
+        # Calculate n-step return by iterating through the buffer
+        for idx in range(1, len(self.n_step_buffer)):
+            # Get the experience at this step
+            experience = self.n_step_buffer[idx]
+            # Add the discounted reward to the n-step return
+            n_step_reward += (self.gamma ** idx) * experience.reward
+
+            # Update actual step count
+            actual_steps = idx + 1
+
+            # If this experience is terminal, update next_state and done flag
+            if experience.done:
+                n_step_next_state = experience.next_state
+                n_step_done = True
+                break
+
+            # If this is the last experience in our buffer, update next_state
+            if idx == len(self.n_step_buffer) - 1:
+                n_step_next_state = experience.next_state
+
+        # Calculate the actual discount factor based on the number of steps
+        # If we reached a terminal state, the discount is 0 (no bootstrapping)
+        actual_discount = 0.0 if n_step_done else self.gamma ** actual_steps
+
+        return n_step_reward, n_step_next_state, n_step_done, actual_discount
 
     def add(self, state, action, reward, next_state, done):
         """
@@ -179,10 +239,65 @@ class PrioritizedReplayBuffer:
                 done=done
             )
 
-            # Add to memory with maximum priority
-            idx = self.tree.add(self.max_priority)
-            self.memory[idx] = experience
-            self.size = min(self.size + 1, self.capacity)
+            # Add experience to n-step buffer
+            self.n_step_buffer.append(experience)
+
+            # If n-step buffer is not full yet, just return
+            if len(self.n_step_buffer) < self.n_step and not done:
+                return
+
+            # If we have enough experiences or reached a terminal state, process the n-step return
+            if len(self.n_step_buffer) >= 1:  # At least one experience is needed
+                # Get the first experience from the n-step buffer
+                first_experience = self.n_step_buffer[0]
+
+                # If n_step is 1, just use the experience as is
+                if self.n_step == 1:
+                    # Add to memory with maximum priority
+                    idx = self.tree.add(self.max_priority)
+                    self.memory[idx] = first_experience
+                    self.size = min(self.size + 1, self.capacity)
+                else:
+                    # Calculate n-step return
+                    n_step_reward, n_step_next_state, n_step_done, actual_discount = self._get_n_step_info()
+
+                    # Create a new experience with the n-step information
+                    n_step_experience = self.Experience(
+                        state=first_experience.state,
+                        action=first_experience.action,
+                        reward=n_step_reward,
+                        next_state=n_step_next_state,
+                        done=n_step_done
+                    )
+
+                    # Add to memory with maximum priority
+                    idx = self.tree.add(self.max_priority)
+                    self.memory[idx] = n_step_experience
+
+                    # Store the actual discount factor for this experience
+                    if not hasattr(self, 'discounts'):
+                        self.discounts = {}
+                    self.discounts[idx] = actual_discount
+                    self.size = min(self.size + 1, self.capacity)
+
+            # ---- flush 未滿 n_step 的剩餘 transition ----
+            if done:
+                while len(self.n_step_buffer) > 0:
+                    first_experience = self.n_step_buffer[0]
+                    n_step_reward, n_step_next, n_step_done, actual_discount = self._get_n_step_info()
+                    n_step_exp = self.Experience(state=first_experience.state,
+                                              action=first_experience.action,
+                                              reward=n_step_reward,
+                                              next_state=n_step_next,
+                                              done=n_step_done)
+                    idx = self.tree.add(self.max_priority)
+                    self.memory[idx] = n_step_exp
+                    if not hasattr(self, 'discounts'):
+                        self.discounts = {}
+                    self.discounts[idx] = actual_discount
+                    self.size = min(self.size + 1, self.capacity)
+                    self.n_step_buffer.popleft()
+
         except Exception as e:
             print(f"Error adding experience to buffer: {e}")
 
@@ -204,6 +319,9 @@ class PrioritizedReplayBuffer:
         # Check if we have enough experiences to sample
         if len(self) < batch_size:
             print(f"Warning: Not enough experiences in buffer. Have {len(self)}, need {batch_size}.")
+            return None, None, None
+
+        if self.tree.total_priority() == 0:
             return None, None, None
 
         indices = []
@@ -305,6 +423,19 @@ class PrioritizedReplayBuffer:
             rewards = torch.from_numpy(np.vstack([e.reward for e in valid_experiences])).float()
             dones = torch.from_numpy(np.vstack([e.done for e in valid_experiences]).astype(np.uint8)).float()
 
+            # Get the actual discount factors for each experience
+            # Default to gamma^n_step if not found in discounts dictionary
+            discounts = []
+            for idx in valid_indices:
+                if hasattr(self, 'discounts') and idx in self.discounts:
+                    discounts.append(self.discounts[idx])
+                else:
+                    # If discount not found, use the default gamma^n_step
+                    discounts.append(self.gamma ** self.n_step)
+
+            # Convert discounts to tensor
+            discounts = torch.FloatTensor(discounts).unsqueeze(1)  # Shape: (batch_size, 1)
+
             # Convert valid_weights to PyTorch tensor directly
             valid_weights = torch.FloatTensor(valid_weights).unsqueeze(1)  # Shape: (batch_size, 1)
 
@@ -313,7 +444,7 @@ class PrioritizedReplayBuffer:
             if actual_batch_size < batch_size:
                 print(f"Note: Returning {actual_batch_size} experiences instead of the requested {batch_size}.")
 
-            return (states, actions, rewards, next_states, dones), valid_indices, valid_weights
+            return (states, actions, rewards, next_states, dones, discounts), valid_indices, valid_weights
         except Exception as e:
             print(f"Error converting experiences to tensors: {e}")
             return None, None, None
