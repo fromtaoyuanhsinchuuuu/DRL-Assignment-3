@@ -4,6 +4,9 @@ import numpy as np
 import os
 from dueling_qnet import DuelingMarioQNet
 
+
+torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+
 # Do not modify the input of the 'act' function and the '__init__' function.
 class Agent(object):
     """Agent that uses trained Dueling DQN model to select actions."""
