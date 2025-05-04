@@ -46,8 +46,8 @@ class Agent(object):
         # First, check for the n-step model file (highest priority)
         if os.path.exists("mario_dueling_nstep_qnet.pth"):
             print("Found n-step model file: mario_dueling_nstep_qnet.pth")
-            return "mario_dueling_nstep_ep8000.pth"
-            # return "mario_dueling_nstep_qnet.pth"
+            # return "mario_dueling_nstep_ep8000.pth"
+            return "mario_dueling_nstep_qnet.pth"
 
         # Check for n-step checkpoint files
         if os.path.exists("dueling_nstep_checkpoints"):
