@@ -13,6 +13,130 @@ from env_configuration_preprocess import create_mario_env
 from dueling_nstep_agent import Dueling_NSTEP_DDQN_Agent
 import config
 
+def calculate_shaping_reward(info, action, episode, progress_bar,
+                            episode_max_x, previous_life_this_episode,
+                            reached_milestones_this_episode, previous_y_pos,
+                            previous_coins, previous_score, steps_at_current_x,
+                            previous_x_pos, episode_steps):
+    """
+    Calculate the reward shaping component based on the environment info.
+
+    Args:
+        info: Environment info dictionary
+        action: The action taken
+        episode: Current episode number
+        progress_bar: TQDM progress bar for printing
+        episode_max_x: Maximum x position reached in this episode
+        previous_life_this_episode: Previous life count in this episode
+        reached_milestones_this_episode: Dictionary tracking reached milestones
+        previous_y_pos: Previous y position
+        previous_coins: Previous coin count
+        previous_score: Previous score
+        steps_at_current_x: Number of steps at current x position
+        previous_x_pos: Previous x position
+        episode_steps: Current step count in this episode
+
+    Returns:
+        tuple: (shaping_reward, updated_episode_max_x, updated_previous_life,
+               updated_reached_milestones, updated_previous_y_pos,
+               updated_previous_coins, updated_previous_score,
+               updated_steps_at_current_x, updated_previous_x_pos)
+    """
+    shaping_reward = 0.0
+
+    # Get current state values from info
+    current_x_pos = info.get('x_pos', 0)
+    current_life = info.get('life', 2)
+    current_y_pos = info.get('y_pos', 0)
+    current_coins = info.get('coins', 0)
+    current_score = info.get('score', 0)
+
+    # 1. Progress Bonus
+    if current_x_pos > episode_max_x:
+        shaping_reward += (current_x_pos - episode_max_x) * config.PROGRESS_WEIGHT
+        episode_max_x = current_x_pos
+
+    # 2. Life Preservation Penalty
+    if current_life < previous_life_this_episode:
+        shaping_reward += config.LIFE_LOSS_PENALTY
+        progress_bar.write(f"💔 Life lost in episode {episode}! Lives remaining: {current_life}")
+    previous_life_this_episode = current_life
+
+    # 3. Milestone Bonus
+    for m, reached in reached_milestones_this_episode.items():
+        if not reached and current_x_pos >= m:
+            shaping_reward += config.MILESTONES[m]
+            reached_milestones_this_episode[m] = True
+            # Only print for significant milestones (reward >= 500)
+            if config.MILESTONES[m] >= 500:
+                progress_bar.write(f"🎯 Milestone {m} reached in episode {episode}!")
+
+    # 4. Time Penalty
+    shaping_reward += config.TIME_PENALTY_PER_STEP
+
+    # 5. Flag Get Bonus (in addition to milestone)
+    if config.USE_FLAG_BONUS and 'flag_get' in info and info['flag_get']:
+        shaping_reward += config.FLAG_GET_BONUS
+        progress_bar.write(f"🚩 FLAG BONUS in episode {episode}! Extra reward: {config.FLAG_GET_BONUS}")
+
+    # 6. Coin Collection Reward
+    if config.USE_COIN_REWARD:
+        coins_collected = current_coins - previous_coins
+        if coins_collected > 0:
+            coin_reward = coins_collected * config.COIN_REWARD
+            shaping_reward += coin_reward
+            # Only print if multiple coins collected or less frequent
+            if coins_collected > 1 or episode_steps % 10 == 0:
+                progress_bar.write(f"💰 Coins collected in episode {episode}: {coins_collected}")
+        previous_coins = current_coins
+
+    # 7. Enemy Defeat Reward
+    if config.USE_ENEMY_DEFEAT_REWARD:
+        # Score increases when enemies are defeated
+        if current_score > previous_score:
+            # Assuming score increases are primarily from defeating enemies
+            shaping_reward += config.ENEMY_DEFEAT_REWARD
+            progress_bar.write(f"💥 Enemy defeated in episode {episode}!")
+        previous_score = current_score
+
+    # 8. Speed Bonus
+    if config.USE_SPEED_BONUS:
+        x_progress = current_x_pos - previous_x_pos
+        if x_progress >= config.SPEED_BONUS_THRESHOLD:
+            shaping_reward += config.SPEED_BONUS_REWARD
+            # No printing for speed bonus
+        previous_x_pos = current_x_pos
+
+    # 9. Height Exploration Reward
+    if config.USE_HEIGHT_EXPLORATION:
+        # Reward for exploring higher positions (smaller y values in Mario)
+        if current_y_pos < previous_y_pos:
+            height_reward = (previous_y_pos - current_y_pos) * config.HEIGHT_EXPLORATION_REWARD
+            shaping_reward += height_reward
+        previous_y_pos = current_y_pos
+
+    # 10. Jump Action Reward
+    if config.USE_JUMP_REWARD:
+        # Check if the action involves jumping (actions 1, 2, 3, 5, 6, 7 in COMPLEX_MOVEMENT)
+        jump_actions = [1, 2, 3, 5, 6, 7]
+        if action in jump_actions:
+            shaping_reward += config.JUMP_ACTION_REWARD
+
+    # 11. Stuck Penalty
+    if config.USE_STUCK_PENALTY:
+        if current_x_pos == previous_x_pos:
+            steps_at_current_x += 1
+            if steps_at_current_x >= config.STUCK_STEPS_THRESHOLD:
+                shaping_reward += config.STUCK_PENALTY
+                # No printing for stuck penalty
+        else:
+            steps_at_current_x = 0
+        previous_x_pos = current_x_pos
+
+    return (shaping_reward, episode_max_x, previous_life_this_episode,
+            reached_milestones_this_episode, previous_y_pos, previous_coins,
+            previous_score, steps_at_current_x, previous_x_pos)
+
 def main():
     """
     Main training loop for the Dueling DDQN+PER agent with N-step bootstrapping playing Super Mario Bros.
@@ -194,14 +318,20 @@ def main():
     with open(progress_file, file_mode, newline='') as f:
         writer = csv.writer(f)
         if file_mode == 'w':                        # 只有第一次才寫表頭
-            writer.writerow(['Episode','Steps','Reward','Avg_Reward','Epsilon',
-                         'Max_X_Position','Episode_X_Position','Flags_Gotten'])
+            header = ['Episode','Steps','Reward','Avg_Reward','Epsilon',
+                     'Max_X_Position','Episode_X_Position','Flags_Gotten']
+            if config.USE_REWARD_SHAPING:
+                header.append('Shaped_Reward')
+            writer.writerow(header)
 
     # Create a separate file to track flag events
     flag_events_file = f'{logs_dir}/flag_events.csv'
     with open(flag_events_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Episode', 'X_Position', 'Steps', 'Reward'])
+        header = ['Episode', 'X_Position', 'Steps', 'Reward']
+        if config.USE_REWARD_SHAPING:
+            header.append('Shaped_Reward')
+        writer.writerow(header)
 
     # Main training loop
     total_steps = 0
@@ -215,14 +345,48 @@ def main():
         try:
             # Try newer Gym API (returns obs, info)
             state, info = env.reset()
+            # Initialize tracking variables
+            info_dict = info if isinstance(info, dict) else {}
+
             # Track initial x position
-            episode_max_x = info.get('x_pos', 0) if isinstance(info, dict) else 0
+            episode_max_x = info_dict.get('x_pos', 0)
+
+            # Track life count for reward shaping - initialize to 3 (Mario's starting lives)
+            previous_life_this_episode = info_dict.get('life', 3)
+
+            # Track reached milestones for reward shaping
+            reached_milestones_this_episode = {m: False for m in config.MILESTONES.keys()} if config.USE_REWARD_SHAPING else {}
+
+            # Track previous y position for height exploration reward
+            previous_y_pos = info_dict.get('y_pos', 0)
+
+            # Track previous coins for coin collection reward
+            previous_coins = info_dict.get('coins', 0)
+
+            # Track previous score for enemy defeat detection
+            previous_score = info_dict.get('score', 0)
+
+            # Track steps at current x position for stuck detection
+            steps_at_current_x = 0
+
+            # Track previous x position for speed bonus and stuck detection
+            previous_x_pos = episode_max_x
         except ValueError:
             # Fall back to older Gym API (returns just obs)
             state = env.reset()
-            episode_max_x = 0
 
-        total_reward = 0
+            # Initialize tracking variables with default values
+            episode_max_x = 0
+            previous_life_this_episode = 3  # Mario's starting lives
+            reached_milestones_this_episode = {m: False for m in config.MILESTONES.keys()} if config.USE_REWARD_SHAPING else {}
+            previous_y_pos = 0
+            previous_coins = 0
+            previous_score = 0
+            steps_at_current_x = 0
+            previous_x_pos = 0
+
+        total_reward = 0  # Keep track of ORIGINAL reward for logging
+        shaped_reward = 0  # Keep track of shaped reward
         episode_steps = 0
 
         # Episode loop
@@ -240,6 +404,25 @@ def main():
                 next_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated  # Combine terminated and truncated flags
 
+                # Original reward for logging
+                original_reward = reward
+
+                # Apply reward shaping if enabled
+                if config.USE_REWARD_SHAPING:
+                    # Call the reward shaping function
+                    (shaping_reward, episode_max_x, previous_life_this_episode,
+                     reached_milestones_this_episode, previous_y_pos, previous_coins,
+                     previous_score, steps_at_current_x, previous_x_pos) = calculate_shaping_reward(
+                        info, action, episode, progress_bar, episode_max_x,
+                        previous_life_this_episode, reached_milestones_this_episode,
+                        previous_y_pos, previous_coins, previous_score,
+                        steps_at_current_x, previous_x_pos, episode_steps
+                    )
+
+                    # Combine original reward and shaping reward
+                    reward = original_reward + shaping_reward
+                    shaped_reward += shaping_reward
+
                 # Check if Mario got the flag
                 if 'flag_get' in info and info['flag_get']:
                     flags_gotten += 1
@@ -249,17 +432,40 @@ def main():
                     # Log flag event to CSV
                     with open(flag_events_file, 'a', newline='') as f:
                         writer = csv.writer(f)
-                        writer.writerow([episode, x_pos, episode_steps, total_reward])
+                        row_data = [episode, x_pos, episode_steps, total_reward]
+                        if config.USE_REWARD_SHAPING:
+                            row_data.append(shaped_reward)
+                        writer.writerow(row_data)
 
-                # Track Mario's x position
-                if 'x_pos' in info:
+                # Track Mario's x position (this is now redundant as it's handled in the reward shaping function)
+                if 'x_pos' in info and not config.USE_REWARD_SHAPING:
                     episode_max_x = max(episode_max_x, info['x_pos'])
+
             except ValueError:
+                # Fall back to older Gym API (returns obs, reward, done, info)
                 try:
-                    # Fall back to older Gym API (returns obs, reward, done, info)
                     next_state, reward, done, info = env.step(action)
                     terminated = done
                     truncated = False
+
+                    # Original reward for logging
+                    original_reward = reward
+
+                    # Apply reward shaping if enabled
+                    if config.USE_REWARD_SHAPING:
+                        # Call the reward shaping function
+                        (shaping_reward, episode_max_x, previous_life_this_episode,
+                         reached_milestones_this_episode, previous_y_pos, previous_coins,
+                         previous_score, steps_at_current_x, previous_x_pos) = calculate_shaping_reward(
+                            info, action, episode, progress_bar, episode_max_x,
+                            previous_life_this_episode, reached_milestones_this_episode,
+                            previous_y_pos, previous_coins, previous_score,
+                            steps_at_current_x, previous_x_pos, episode_steps
+                        )
+
+                        # Combine original reward and shaping reward
+                        reward = original_reward + shaping_reward
+                        shaped_reward += shaping_reward
 
                     # Check if Mario got the flag
                     if 'flag_get' in info and info['flag_get']:
@@ -270,20 +476,29 @@ def main():
                         # Log flag event to CSV
                         with open(flag_events_file, 'a', newline='') as f:
                             writer = csv.writer(f)
-                            writer.writerow([episode, x_pos, episode_steps, total_reward])
+                            row_data = [episode, x_pos, episode_steps, total_reward]
+                            if config.USE_REWARD_SHAPING:
+                                row_data.append(shaped_reward)
+                            writer.writerow(row_data)
 
-                    # Track Mario's x position
-                    if 'x_pos' in info:
+                    # Track Mario's x position (this is now redundant as it's handled in the reward shaping function)
+                    if 'x_pos' in info and not config.USE_REWARD_SHAPING:
                         episode_max_x = max(episode_max_x, info['x_pos'])
+
                 except Exception as e:
-                    # If we get a ValueError, the environment might be done
-                    break
-            # Store experience and train
+                    # If we get an error, the environment might be done
+                    progress_bar.write(f"Environment step error: {e}")
+                    next_state = state  # Use current state as next state
+                    reward = -100  # Example penalty
+                    original_reward = -100
+                    done = True
+
+            # Store experience with MODIFIED reward
             agent.step(state, action, reward, next_state, done, train_freq=config.TRAIN_FREQ_STEP)
 
-            # Update state and metrics
+            # Update state and metrics using ORIGINAL reward for logging
             state = next_state
-            total_reward += reward
+            total_reward += original_reward  # Log the ORIGINAL reward
             episode_steps += 1
             total_steps += 1
 
@@ -320,11 +535,15 @@ def main():
         # Log progress to CSV file
         with open(progress_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([episode, episode_steps, total_reward, avg_reward, agent.epsilon, max_x_position, episode_max_x, flags_gotten])
+            row_data = [episode, episode_steps, total_reward, avg_reward, agent.epsilon,
+                       max_x_position, episode_max_x, flags_gotten]
+            if config.USE_REWARD_SHAPING:
+                row_data.append(shaped_reward)
+            writer.writerow(row_data)
 
         # Update progress bar with current metrics
         elapsed_time = time.time() - start_time
-        progress_bar.set_postfix({
+        postfix_dict = {
             'steps': episode_steps,
             'reward': f"{total_reward:.2f}",
             'avg_reward': f"{avg_reward:.2f}",
@@ -335,22 +554,39 @@ def main():
             'flags': flags_gotten,
             'max_x': max_x_position,
             'time': f"{elapsed_time:.2f}s"
-        })
+        }
+
+        # Add shaped reward info if reward shaping is enabled
+        if config.USE_REWARD_SHAPING:
+            postfix_dict['shaped'] = f"{shaped_reward:.2f}"
+
+        progress_bar.set_postfix(postfix_dict)
 
         # Print detailed progress every 10 episodes
         if episode % 10 == 0:
-            progress_bar.write(f"Episode {episode}/{config.NUM_EPISODES} | "
-                  f"Steps: {episode_steps} | "
-                  f"Reward: {total_reward:.2f} | "
-                  f"Avg Reward (100): {avg_reward:.2f} | "
-                  f"Epsilon: {agent.epsilon:.4f} | "
-                  f"Alpha: {config.PER_ALPHA:.2f} | "
-                  f"Beta: {agent.replay_buffer.beta:.2f} | "
-                  f"Buffer Size: {len(agent.replay_buffer)} | "
-                  f"Flags Gotten: {flags_gotten} | "
-                  f"Max X: {max_x_position} | "
-                  f"Episode X: {episode_max_x} | "
-                  f"Time: {elapsed_time:.2f}s")
+            progress_info = (
+                f"Episode {episode}/{config.NUM_EPISODES} | "
+                f"Steps: {episode_steps} | "
+                f"Reward: {total_reward:.2f} | "
+                f"Avg Reward (100): {avg_reward:.2f} | "
+            )
+
+            # Add shaped reward info if reward shaping is enabled
+            if config.USE_REWARD_SHAPING:
+                progress_info += f"Shaped Reward: {shaped_reward:.2f} | "
+
+            progress_info += (
+                f"Epsilon: {agent.epsilon:.4f} | "
+                f"Alpha: {config.PER_ALPHA:.2f} | "
+                f"Beta: {agent.replay_buffer.beta:.2f} | "
+                f"Buffer Size: {len(agent.replay_buffer)} | "
+                f"Flags Gotten: {flags_gotten} | "
+                f"Max X: {max_x_position} | "
+                f"Episode X: {episode_max_x} | "
+                f"Time: {elapsed_time:.2f}s"
+            )
+
+            progress_bar.write(progress_info)
 
         # Save model periodically
         if episode % config.SAVE_FREQ_EPISODE == 0:
