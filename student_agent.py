@@ -25,7 +25,7 @@ class Agent(object):
         if self.model_path:
             try:
                 # Load the model weights
-                state_dict = torch.load(self.model_path, map_location=self.device)
+                state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
 
                 # Load the model with strict=False to allow for architecture differences
                 self.q_net.load_state_dict(state_dict, strict=False)
@@ -44,7 +44,8 @@ class Agent(object):
         # First, check for the n-step model file (highest priority)
         if os.path.exists("mario_dueling_nstep_qnet.pth"):
             print("Found n-step model file: mario_dueling_nstep_qnet.pth")
-            return "mario_dueling_nstep_qnet.pth"
+            return "mario_dueling_nstep_ep8000.pth"
+            # return "mario_dueling_nstep_qnet.pth"
 
         # Check for n-step checkpoint files
         if os.path.exists("dueling_nstep_checkpoints"):
