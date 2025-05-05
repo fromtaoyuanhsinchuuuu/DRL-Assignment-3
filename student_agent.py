@@ -272,10 +272,4 @@ class Agent(object):
             q_values = self.q_net(state)
             action = q_values.argmax().item()
 
-            # Print information about the state and action occasionally
-            if self.action_count % 20 == 0:
-                max_q = q_values.max().item()
-                model_type = "Noisy Network" if self.use_noisy_net else "Standard"
-                print(f"Using {model_type} model. Max Q-value: {max_q:.4f}, Selected action: {action}")
-
             return action
