@@ -32,7 +32,7 @@ SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
 TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
 
 # Checkpoint settings
-LOAD_CHECKPOINT_EPISODE = 5400  # Episode to load checkpoint from (0 = don't load)
+LOAD_CHECKPOINT_EPISODE = 8000  # Episode to load checkpoint from (0 = don't load)
 RESTART_EPSILON = 0.25  # Epsilon value to use when restarting training
 
 # Model settings
@@ -40,8 +40,8 @@ MODEL_SAVE_PATH = 'mario_ddqn_per_qnet.pth'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- Reward Shaping Parameters ---
-PROGRESS_WEIGHT = 0.5       # Reward per unit of X position increase
-LIFE_LOSS_PENALTY = -250    # Penalty for losing a life
+PROGRESS_WEIGHT = 0.3       # Reward per unit of X position increase
+LIFE_LOSS_PENALTY = -50    # Penalty for losing a life
 TIME_PENALTY_PER_STEP = -0.01 # Small penalty for each step
 
 # Define milestones as X positions and their corresponding bonus
@@ -66,15 +66,19 @@ SPEED_BONUS_THRESHOLD = 5   # X position increase per step threshold for speed b
 SPEED_BONUS_REWARD = 10     # Reward for moving quickly
 HEIGHT_EXPLORATION_REWARD = 0.2  # Reward multiplier for exploring higher y positions
 JUMP_ACTION_REWARD = 0.5    # Small reward for using jump actions to encourage exploration
-STUCK_PENALTY = -0.5        # Penalty per step when Mario is stuck at the same x position
-STUCK_STEPS_THRESHOLD = 30  # Number of steps to consider Mario as "stuck"
+STUCK_PENALTY = -0.3        # Penalty per step when Mario is stuck at the same x position
+STUCK_STEPS_THRESHOLD = 20  # Number of steps to consider Mario as "stuck"
 
 # Enable/disable specific reward shaping components
 USE_REWARD_SHAPING = True
 USE_FLAG_BONUS = True
 USE_COIN_REWARD = True
 USE_ENEMY_DEFEAT_REWARD = True
-USE_SPEED_BONUS = True
-USE_HEIGHT_EXPLORATION = True
-USE_JUMP_REWARD = True
+USE_SPEED_BONUS = False
+USE_HEIGHT_EXPLORATION = False
+USE_JUMP_REWARD = False
 USE_STUCK_PENALTY = True
+
+# Visualization settings
+RENDER_EPISODES = False  # Enable/disable rendering episodes every 10 episodes
+RENDER_DELAY = 0.05     # Delay between frames when rendering (seconds)
