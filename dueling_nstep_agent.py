@@ -112,11 +112,6 @@ class Dueling_NSTEP_DDQN_Agent:
             print(f"Forcing random exploration: action {random_action}")
             return random_action
 
-        # --- 移除 Noisy Net 相關的特殊處理 ---
-        # # If using Noisy Networks, reset the noise before selecting an action
-        # if config.USE_NOISY_NET:
-        #     self.q_net.reset_noise() # <--- 移除這行
-
         # Remember current network mode
         was_training = self.q_net.training
 

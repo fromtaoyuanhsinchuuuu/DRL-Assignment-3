@@ -6,9 +6,79 @@ import random
 import os
 from dueling_qnet import DuelingMarioQNet
 import config
+from collections import deque
 
 # Debug flag - set to True to enable debug messages, False to disable
 DEBUG = False
+
+# --- 新增的預處理函數，包含幀跳過和取最大值模擬 ---
+def preprocess_frame(raw_frame, obs_buffer, frame_stack, device, skip=4):
+    """
+    Preprocess a single raw observation frame, simulating frame skipping and max pooling.
+    This function is called for each raw frame received from the environment.
+    Args:
+        raw_frame: The raw observation frame from the environment (e.g., RGB 240x256x3).
+        obs_buffer: Deque to store the last 2 raw frames for max pooling.
+        frame_stack: Deque to store the last 4 processed (84x84 grayscale) frames.
+        device: Device to move tensors to.
+        skip: The frame skipping value (default: 4).
+    Returns:
+        torch.Tensor or None: Processed and stacked observation tensor (1, 4, 84, 84)
+                               if a new stacked frame is generated, otherwise None.
+    """
+    # Convert raw_frame to numpy array if needed
+    if hasattr(raw_frame, '__array__'):
+        raw_frame = np.array(raw_frame)
+
+    # Add the current raw frame to the observation buffer
+    obs_buffer.append(raw_frame)
+
+    # Only process and stack frames every 'skip' steps
+    if len(obs_buffer) == skip:
+        # Take the maximum over the last 2 frames in the buffer
+        # Even though we're storing up to 'skip' frames, we only take max over the last 2
+        # This matches the behavior of MaxAndSkipEnv in the training environment
+        if len(obs_buffer) >= 2:
+            max_frame = np.maximum(obs_buffer[-2], obs_buffer[-1])
+        else:
+            # Should not happen if skip >= 2, but handle defensively
+            max_frame = obs_buffer[-1]
+
+        # Convert the max_frame (RGB) to tensor
+        rgb_tensor = torch.from_numpy(max_frame).float()
+
+        # Convert RGB to PyTorch format (channels first) and add batch dimension
+        rgb_tensor = rgb_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, 240, 256]
+
+        # Resize to [1, 3, 84, 84]
+        rgb_tensor = torch.nn.functional.interpolate(rgb_tensor, size=(84, 84), mode='bilinear', align_corners=False)
+
+        # Convert RGB to grayscale: 0.299 * R + 0.587 * G + 0.114 * B
+        gray_tensor = 0.299 * rgb_tensor[:, 0:1] + 0.587 * rgb_tensor[:, 1:2] + 0.114 * rgb_tensor[:, 2:3]
+
+        # Convert to numpy array and remove batch and channel dimensions
+        current_processed_frame = gray_tensor.squeeze().cpu().numpy()  # Shape: (84, 84)
+
+        # Add the current processed frame to the frame stack
+        frame_stack.append(current_processed_frame)
+
+        # Clear the observation buffer after processing
+        obs_buffer.clear()
+
+        # Create a tensor with the correct shape for PyTorch (batch, channels, height, width)
+        stacked_state = torch.zeros(1, 4, 84, 84, device=device)
+
+        # Fill the tensor with the frames from the frame stack
+        for i, frame in enumerate(frame_stack):
+            stacked_state[0, i] = torch.from_numpy(frame).float()
+
+        # Normalize
+        stacked_state = stacked_state / 255.0
+
+        return stacked_state.to(device)
+    else:
+        # If not enough frames for skipping, return None
+        return None
 
 # Define the COMPLEX_MOVEMENT action space for Super Mario Bros
 # This is the same as gym_super_mario_bros.actions.COMPLEX_MOVEMENT
@@ -40,10 +110,22 @@ class Agent(object):
             print(f'device {self.device}')
 
         # Define state shape for Mario environment (4 stacked frames of 84x84 grayscale images)
-        self.state_shape = (4, 84, 84, 1)
+        self.state_shape = (4, 84, 84, 1) # This is the shape *after* preprocessing
 
         # Flag to track if we're using noisy networks
         self.use_noisy_net = False
+
+        # --- 新增：用於模擬幀跳過和取最大值的緩衝區和計數器 ---
+        self.skip_frames = 4 # 與 MaxAndSkipEnv 中的 skip 值一致
+        self.obs_buffer = deque(maxlen=self.skip_frames) # 存儲最近 skip_frames 幀原始觀察用於取最大值
+        self.frame_stack = deque(maxlen=4) # 存儲最近 4 幀處理後的灰度圖 (84x84)
+        self._current_action = 0 # 存儲在幀跳過期間重複的動作
+        self._last_processed_state = None # 存儲上次生成的堆疊狀態
+
+        # Initialize frame stack with blank frames
+        blank_frame_84x84 = np.zeros((84, 84), dtype=np.float32)
+        for _ in range(4):
+            self.frame_stack.append(blank_frame_84x84)
 
         # Find the model path first to determine if it's a noisy network model
         self.model_path = self._find_latest_model()
@@ -54,7 +136,8 @@ class Agent(object):
             self.use_noisy_net = True
 
         # Initialize Dueling Q-network with appropriate noisy network setting
-        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n, use_noisy_net=self.use_noisy_net).to(self.device)
+        # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
+        self.q_net = DuelingMarioQNet((4, 84, 84), self.action_space.n, use_noisy_net=self.use_noisy_net).to(self.device)
 
         # Try to load the model weights
         self.model_loaded = False
@@ -248,99 +331,48 @@ class Agent(object):
         self.q_net.eval()
 
         try:
-            # Convert state to tensor
-            # Handle LazyFrames from FrameStack wrapper
-            if hasattr(state, '__array__'):
-                state = np.array(state)
-
-            # Store original shape for debugging
-            orig_shape = state.shape
-
-            # Handle raw RGB frames from evaluation environment (240, 256, 3)
-            if len(state.shape) == 3 and state.shape[0] == 240 and state.shape[1] == 256 and state.shape[2] == 3:
-                # Only print the warning once every 100 steps to reduce spam
-                if DEBUG and self.action_count % 100 == 0:
-                    print(f"Handling raw RGB frame from evaluation environment: {state.shape}")
-
-                # Create a tensor with the correct shape for PyTorch (batch, channels, height, width)
-                processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
-
-                # Convert to tensor
-                rgb_tensor = torch.from_numpy(state).float()
-
-                # Convert RGB to PyTorch format (channels first) and add batch dimension
-                rgb_tensor = rgb_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, 240, 256]
-
-                # Resize to [1, 3, 84, 84]
-                rgb_tensor = torch.nn.functional.interpolate(rgb_tensor, size=(84, 84), mode='bilinear', align_corners=False)
-
-                # Convert RGB to grayscale: 0.299 * R + 0.587 * G + 0.114 * B
-                gray_tensor = 0.299 * rgb_tensor[:, 0:1] + 0.587 * rgb_tensor[:, 1:2] + 0.114 * rgb_tensor[:, 2:3]
-
-                # Fill all 4 channels with the same grayscale image (frame stacking)
-                for i in range(4):
-                    processed_state[:, i] = gray_tensor.squeeze(1)
-
-                # Normalize
-                processed_state = processed_state / 255.0
-
-                # Use the processed state
-                state_tensor = processed_state
-
-            # Handle the standard training environment format (4, 84, 84, 1)
-            elif len(state.shape) == 4 and state.shape[0] == 4 and state.shape[3] == 1:
-                # Validate state shape
-                if DEBUG and self.action_count % 100 == 0:
-                    print(f"Processing standard training format: {state.shape}")
-
-                # Reshape from (frames, height, width, channels) to (batch_size, frames, height, width)
-                # First, remove the channel dimension (which is 1)
-                state = torch.from_numpy(state).float()
-                state = state.squeeze(-1)
-                # Then add batch dimension
-                state = state.unsqueeze(0)
-                # Normalize
-                state = state / 255.0
-
-                # Use the processed state
-                state_tensor = state
-
-            # Handle other formats with a warning
-            else:
-                if DEBUG and self.action_count % 100 == 0:
-                    print(f"Warning: Unexpected observation shape: {orig_shape}")
-
-                # Try to convert to tensor and normalize
-                try:
+            # For get_action, we assume the state is already preprocessed
+            # Convert to tensor if it's a numpy array
+            if isinstance(state, np.ndarray):
+                # Handle the standard training environment format (4, 84, 84, 1)
+                if len(state.shape) == 4 and state.shape[0] == 4 and state.shape[3] == 1:
+                    # Convert to tensor
                     state_tensor = torch.from_numpy(state).float()
-
-                    # If it's a single RGB frame
-                    if len(state.shape) == 3 and state.shape[-1] == 3:
-                        # Create tensor with correct shape
-                        processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
-
-                        # Convert RGB to grayscale and resize
-                        rgb_state = state_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
-                        if rgb_state.shape[2] != 84 or rgb_state.shape[3] != 84:
-                            rgb_state = torch.nn.functional.interpolate(rgb_state, size=(84, 84), mode='bilinear', align_corners=False)
-
-                        # Convert to grayscale
-                        gray_state = 0.299 * rgb_state[:, 0:1] + 0.587 * rgb_state[:, 1:2] + 0.114 * rgb_state[:, 2:3]
-
-                        # Fill all 4 channels with the same grayscale image
-                        for i in range(4):
-                            processed_state[:, i] = gray_state.squeeze(1)
-
-                        state_tensor = processed_state / 255.0
+                    # Remove the channel dimension (which is 1)
+                    state_tensor = state_tensor.squeeze(-1)  # Shape: (4, 84, 84)
+                    # Add batch dimension
+                    state_tensor = state_tensor.unsqueeze(0)  # Shape: (1, 4, 84, 84)
+                    # Normalize
+                    state_tensor = state_tensor / 255.0
+                else:
+                    # For other formats, use the last processed state if available
+                    if self._last_processed_state is not None:
+                        state_tensor = self._last_processed_state
                     else:
                         # Create a blank state as fallback
                         state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
-                except:
+            elif isinstance(state, torch.Tensor):
+                # If it's already a tensor, ensure it has the right shape
+                if state.dim() == 3 and state.shape[0] == 4 and state.shape[1] == 84 and state.shape[2] == 84:
+                    # Add batch dimension if needed
+                    state_tensor = state.unsqueeze(0)
+                elif state.dim() == 4 and state.shape[0] == 1 and state.shape[1] == 4:
+                    # Already in the right format
+                    state_tensor = state
+                else:
+                    # For other formats, use the last processed state if available
+                    if self._last_processed_state is not None:
+                        state_tensor = self._last_processed_state
+                    else:
+                        # Create a blank state as fallback
+                        state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
+            else:
+                # For other types, use the last processed state if available
+                if self._last_processed_state is not None:
+                    state_tensor = self._last_processed_state
+                else:
                     # Create a blank state as fallback
                     state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
-
-            # Move to device
-            state_tensor = state_tensor.to(self.device)
 
             # Get Q values from the network (in eval mode, uses mean weights)
             with torch.no_grad():
@@ -362,6 +394,11 @@ class Agent(object):
                         print(f"Selected action: {max_q_idx}")
 
             return q_values.argmax().item()
+        except Exception as e:
+            if DEBUG:
+                print(f"Error in get_action: {e}")
+            # Return a random action as fallback
+            return random.randrange(self.action_space.n)
         finally:
             # Restore network mode
             if was_training:
@@ -369,18 +406,85 @@ class Agent(object):
 
     def act(self, observation):
         """
-        Select an action based on the current observation.
-        This is the required interface method that uses get_action internally.
-
+        Select an action based on the current observation, simulating environment preprocessing.
         Args:
-            observation: Current observation from the environment
-
+            observation: Current raw observation from the environment (e.g., RGB 240x256x3).
         Returns:
-            Selected action
+            Selected action.
         """
-        # Increment action counter
+        # If no model is loaded, use random actions
+        if not self.model_loaded:
+            return random.randrange(self.action_space.n)
+
+        # Increment action counter (optional, for debugging)
         self.action_count += 1
 
-        # Use the get_action method to select an action
-        # For evaluation, we set use_epsilon=False to ensure deterministic behavior
-        return self.get_action(observation, use_epsilon=False)
+        # Detect episode reset by checking if observation is a new episode start
+        # This is a heuristic - we assume a new episode starts when:
+        # 1. The observation is a full RGB frame (240, 256, 3)
+        # 2. The action count is 1 or the observation is significantly different from previous frames
+        if hasattr(observation, '__array__'):
+            obs_array = np.array(observation)
+            if len(obs_array.shape) == 3 and obs_array.shape[0] == 240 and obs_array.shape[1] == 256 and obs_array.shape[2] == 3:
+                # Check if this is the first action or if the observation is very different
+                if self.action_count == 1 or (len(self.obs_buffer) > 0 and
+                   np.mean(np.abs(obs_array - self.obs_buffer[-1])) > 50):  # Threshold for difference
+                    # Reset buffers for new episode
+                    if DEBUG:
+                        print("Detected new episode, resetting buffers")
+                    self.obs_buffer.clear()
+                    # Reset frame stack with blank frames
+                    self.frame_stack.clear()
+                    blank_frame = np.zeros((84, 84), dtype=np.float32)
+                    for _ in range(4):
+                        self.frame_stack.append(blank_frame)
+
+        # Process the current raw observation frame
+        # This function will add to obs_buffer and frame_stack internally
+        # It returns a new stacked state only when 'skip' frames have been processed
+        new_stacked_state = preprocess_frame(
+            observation,
+            self.obs_buffer,
+            self.frame_stack,
+            self.device,
+            skip=self.skip_frames
+        )
+
+        # If a new stacked state was generated (i.e., after 'skip' raw frames)
+        if new_stacked_state is not None:
+            self._last_processed_state = new_stacked_state # Store the new state
+            # Set network to evaluation mode for deterministic action selection
+            was_training = self.q_net.training
+            self.q_net.eval()
+
+            try:
+                # Get Q values from the network
+                with torch.no_grad():
+                    q_values = self.q_net(self._last_processed_state)
+                    # Select the action with the highest Q value
+                    self._current_action = q_values.argmax().item()
+
+                    # Print Q-value information occasionally
+                    if DEBUG and self.action_count % (self.skip_frames * 10) == 0: # Print less often
+                        q_numpy = q_values.cpu().numpy()[0]
+                        max_q_idx = np.argmax(q_numpy)
+                        model_type = "Noisy Network" if self.use_noisy_net else "Standard"
+                        print(f"Using {model_type} model. Max Q-value: {q_numpy[max_q_idx]:.4f}")
+                        try:
+                            action_desc = '+'.join(COMPLEX_MOVEMENT[max_q_idx])
+                            print(f"Selected action: {max_q_idx} ({action_desc})")
+                        except:
+                            print(f"Selected action: {max_q_idx}")
+            except Exception as e:
+                if DEBUG:
+                    print(f"Error getting action from model: {e}")
+                # Fallback to random action if model inference fails
+                self._current_action = random.randrange(self.action_space.n)
+            finally:
+                # Restore network mode
+                if was_training:
+                    self.q_net.train()
+
+        # Return the current action. This action will be repeated for 'skip' raw frames
+        # until a new stacked state is generated and a new action is selected.
+        return self._current_action
