@@ -6,6 +6,7 @@ import numpy as np
 import random
 from dueling_qnet import DuelingMarioQNet
 from per_buffer import PrioritizedReplayBuffer
+import config
 
 class Dueling_DDQN_PER_Agent:
     """
@@ -51,9 +52,10 @@ class Dueling_DDQN_PER_Agent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # Initialize Q networks with Dueling architecture
-        self.q_net = DuelingMarioQNet(state_shape, action_size).to(device)
-        self.target_net = DuelingMarioQNet(state_shape, action_size).to(device)
+        # Initialize Q networks with Dueling architecture and Noisy Networks if enabled
+        self.use_noisy_net = config.USE_NOISY_NET if hasattr(config, 'USE_NOISY_NET') else False
+        self.q_net = DuelingMarioQNet(state_shape, action_size, use_noisy_net=self.use_noisy_net).to(device)
+        self.target_net = DuelingMarioQNet(state_shape, action_size, use_noisy_net=self.use_noisy_net).to(device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()  # Target network is only used for inference
 
@@ -71,20 +73,27 @@ class Dueling_DDQN_PER_Agent:
         self.t_step = 0
 
         print(f"Dueling DDQN+PER Agent initialized on device: {device}")
+        if self.use_noisy_net:
+            print("Using Noisy Networks for exploration (epsilon-greedy disabled)")
 
-    def get_action(self, state, use_epsilon=True):
+    def get_action(self, state, use_epsilon=False):
         """
-        Select an action using epsilon-greedy policy.
+        Select an action using epsilon-greedy policy or Noisy Networks.
 
         Args:
             state: Current state (numpy array) with shape (frames, height, width, channels)
-            use_epsilon: Whether to use epsilon-greedy policy
+            use_epsilon: Whether to use epsilon-greedy policy (only applies if not using Noisy Networks)
 
         Returns:
             Selected action
         """
-        if use_epsilon and random.random() < self.epsilon:
-            return random.randrange(self.action_size)
+        # If using Noisy Networks, we don't need epsilon-greedy exploration
+        # as the noise in the network parameters provides exploration
+        if not self.use_noisy_net:
+            # Epsilon-greedy exploration only if not using Noisy Networks
+            if use_epsilon and random.random() < self.epsilon:
+                return random.randrange(self.action_size)
+
         # Convert state to tensor
         # Handle LazyFrames from FrameStack wrapper
         if hasattr(state, '__array__'):
@@ -101,8 +110,10 @@ class Dueling_DDQN_PER_Agent:
         # Move to device
         state = state.to(self.device)
 
-        # Get Q values from the network
+        # Set network to evaluation mode for action selection
         self.q_net.eval()
+
+        # Get Q values from the network
         with torch.no_grad():
             q_values = self.q_net(state)
 
@@ -134,10 +145,15 @@ class Dueling_DDQN_PER_Agent:
             train_freq: How often to train (in steps)
         """
         # Store experience in replay buffer
+        # Note: The PER buffer already handles normalization during sampling
         self.replay_buffer.add(state, action, reward, next_state, done)
 
         # Increment time step
         self.t_step += 1
+
+        # Decay epsilon (only if not using Noisy Networks)
+        if not self.use_noisy_net and self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
 
         # Train if enough samples and it's time to train
         if len(self.replay_buffer) > self.batch_size and self.t_step % train_freq == 0:
@@ -147,8 +163,13 @@ class Dueling_DDQN_PER_Agent:
         """
         Train the agent using a batch of experiences from the replay buffer.
         """
-
+        # Set network to training mode
         self.q_net.train()
+
+        # Reset noise for Noisy Networks if enabled
+        if self.use_noisy_net:
+            self.q_net.reset_noise()
+            self.target_net.reset_noise()
 
         # Sample experiences from replay buffer
         experiences, indices, is_weights = self.replay_buffer.sample(self.batch_size)
@@ -183,8 +204,9 @@ class Dueling_DDQN_PER_Agent:
         # Compute TD errors for updating priorities
         td_errors = torch.abs(Q_targets - Q_expected).detach().cpu().numpy()
 
-        # Compute weighted loss
-        loss = (F.mse_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
+        # Compute weighted loss using Huber Loss (smooth_l1_loss) instead of MSE
+        # Huber Loss is more robust to outliers than MSE
+        loss = (F.smooth_l1_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
 
         # Minimize the loss
         self.optimizer.zero_grad()

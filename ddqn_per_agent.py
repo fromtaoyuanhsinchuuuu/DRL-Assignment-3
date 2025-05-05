@@ -141,6 +141,9 @@ class DDQN_PER_Agent:
             done: Whether the episode is done
             train_freq: How often to train (in steps)
         """
+        # Note: We don't need to normalize states here because the PER buffer
+        # handles normalization during sampling (states = states / 255.0)
+        # The buffer stores the raw uint8 states to save memory
         # Store experience in replay buffer
         self.replay_buffer.add(state, action, reward, next_state, done)
 
@@ -194,8 +197,9 @@ class DDQN_PER_Agent:
         # Compute TD errors for updating priorities
         td_errors = torch.abs(Q_targets - Q_expected).detach().cpu().numpy()
 
-        # Compute weighted loss
-        loss = (F.mse_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
+        # Compute weighted loss using Huber Loss (smooth_l1_loss) instead of MSE
+        # Huber Loss is more robust to outliers than MSE
+        loss = (F.smooth_l1_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
 
         # Minimize the loss
         self.optimizer.zero_grad()

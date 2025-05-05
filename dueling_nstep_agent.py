@@ -7,6 +7,7 @@ import random
 import os
 from dueling_qnet import DuelingMarioQNet
 from per_buffer import PrioritizedReplayBuffer
+import config
 
 class Dueling_NSTEP_DDQN_Agent:
     """
@@ -59,9 +60,9 @@ class Dueling_NSTEP_DDQN_Agent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # Initialize Dueling Q networks
-        self.q_net = DuelingMarioQNet(state_shape, action_size).to(device)
-        self.target_net = DuelingMarioQNet(state_shape, action_size).to(device)
+        # Initialize Dueling Q networks with Noisy Networks if enabled
+        self.q_net = DuelingMarioQNet(state_shape, action_size, use_noisy_net=config.USE_NOISY_NET).to(device)
+        self.target_net = DuelingMarioQNet(state_shape, action_size, use_noisy_net=config.USE_NOISY_NET).to(device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()  # Target network is only used for inference
 
@@ -83,28 +84,43 @@ class Dueling_NSTEP_DDQN_Agent:
         # Initialize time step counter
         self.t_step = 0
 
-        print(f"Dueling DDQN+PER Agent with {n_step}-step bootstrapping initialized on device: {device}")
+        # 移除不必要的打印
+        # print(f"Dueling DDQN+PER Agent with {n_step}-step bootstrapping initialized on device: {device}")
 
     def get_action(self, state, use_epsilon=True):
         """
-        Select an action using epsilon-greedy policy.
+        Select an action using either epsilon-greedy policy or Noisy Networks.
+        Standard Noisy Net usage: Action selection is deterministic based on mean weights.
+        Exploration is driven by learning the noise parameters during training.
 
         Args:
             state: Current state (numpy array) with shape (frames, height, width, channels)
                   Expected to be in format (4, 84, 84, 1) for stacked frames
-            use_epsilon: Whether to use epsilon-greedy policy
+            use_epsilon: Whether to use epsilon-greedy policy (only applies if USE_NOISY_NET is False)
 
         Returns:
             Selected action
         """
-        # Epsilon-greedy exploration
-        if use_epsilon and random.random() < self.epsilon:
-            return random.randrange(self.action_size)
+        # If NOT using Noisy Networks, use epsilon-greedy
+        if not config.USE_NOISY_NET:
+            if use_epsilon and random.random() < self.epsilon:
+                return random.randrange(self.action_size)
+        # Even with Noisy Networks, occasionally force random actions to break out of local optima
+        # This is a hybrid approach that combines Noisy Networks with occasional epsilon-greedy
+        elif use_epsilon and random.random() < 0.01:  # 1% chance of random action
+            random_action = random.randrange(self.action_size)
+            print(f"Forcing random exploration: action {random_action}")
+            return random_action
+
+        # --- 移除 Noisy Net 相關的特殊處理 ---
+        # # If using Noisy Networks, reset the noise before selecting an action
+        # if config.USE_NOISY_NET:
+        #     self.q_net.reset_noise() # <--- 移除這行
 
         # Remember current network mode
         was_training = self.q_net.training
 
-        # Set network to evaluation mode
+        # Set network to evaluation mode for deterministic action selection
         self.q_net.eval()
 
         try:
@@ -131,9 +147,29 @@ class Dueling_NSTEP_DDQN_Agent:
             # Move to device
             state = state.to(self.device)
 
-            # Get Q values from the network
+            # Get Q values from the network (in eval mode, uses mean weights)
             with torch.no_grad():
                 q_values = self.q_net(state)
+
+                # 打印 Q 值分布信息 (每 100 步打印一次)
+                if self.t_step % 100 == 0:
+                    q_numpy = q_values.cpu().numpy()[0]  # 转换为 numpy 数组
+                    max_q_idx = np.argmax(q_numpy)
+
+                    print(f"\nQ-values distribution at step {self.t_step}:")
+                    print(f"Min Q: {q_numpy.min():.4f}, Max Q: {q_numpy.max():.4f}, Mean Q: {q_numpy.mean():.4f}")
+                    print(f"Q-values variance: {q_numpy.var():.4f}, std: {q_numpy.std():.4f}")
+                    print(f"Selected action: {max_q_idx}, with Q-value: {q_numpy[max_q_idx]:.4f}")
+
+                    # 打印所有动作的 Q 值
+                    action_names = ["NOOP", "RIGHT", "RIGHT+A", "RIGHT+B", "RIGHT+A+B",
+                                   "A", "LEFT", "LEFT+A", "LEFT+B", "LEFT+A+B",
+                                   "DOWN", "UP"]
+                    print("All Q-values:")
+                    for i, (action, q) in enumerate(zip(action_names, q_numpy)):
+                        marker = " *" if i == max_q_idx else ""
+                        print(f"  {action:10s}: {q:.4f}{marker}")
+                    print()  # 空行分隔
 
             return q_values.argmax().item()
         finally:
@@ -169,14 +205,24 @@ class Dueling_NSTEP_DDQN_Agent:
             done: Whether the episode is done
             train_freq: How often to train (in steps)
         """
+        # Note: We don't need to normalize states here because the PER buffer
+        # handles normalization during sampling (states = states / 255.0)
+        # The buffer stores the raw uint8 states to save memory
         # Store experience in replay buffer
         self.replay_buffer.add(state, action, reward, next_state, done)
 
         # Increment time step
         self.t_step += 1
 
-        # Train if enough samples and it's time to train
-        if len(self.replay_buffer) > self.batch_size and self.t_step % train_freq == 0:
+        # Train if enough samples, we've reached the learning start step, and it's time to train
+        if (len(self.replay_buffer) > self.batch_size and
+            self.t_step >= config.LEARNING_START_STEP and
+            self.t_step % train_freq == 0):
+
+            # Print a message when we start training for the first time
+            if self.t_step == config.LEARNING_START_STEP and (self.t_step - config.LEARNING_START_STEP) % train_freq == 0:
+                print(f"Starting training at step {self.t_step} (learning_start_step={config.LEARNING_START_STEP})")
+
             self.train()
 
     def train(self):
@@ -184,16 +230,20 @@ class Dueling_NSTEP_DDQN_Agent:
         Train the agent using a batch of experiences from the replay buffer.
         Uses N-step returns for more efficient learning.
         """
+        # Set Q-network to training mode
         self.q_net.train()
+
+        # Reset noise for Noisy Networks if enabled
+        if config.USE_NOISY_NET:
+            self.q_net.reset_noise()
+            self.target_net.reset_noise()
 
         # Sample experiences from replay buffer
         experiences, indices, is_weights = self.replay_buffer.sample(self.batch_size)
 
         # Check if we have valid experiences
         if experiences is None:
-            # Avoid excessive logging by only printing occasionally
-            if self.t_step % 1000 == 0:
-                print("Skipping training step due to insufficient valid experiences.")
+            print("No valid experiences for training")
             return
 
         states, actions, rewards, next_states, dones, discounts = experiences
@@ -226,17 +276,66 @@ class Dueling_NSTEP_DDQN_Agent:
         # Compute TD errors for updating priorities
         td_errors = torch.abs(Q_targets - Q_expected).detach().cpu().numpy()
 
-        # Compute weighted loss
-        loss = (F.mse_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
+        # Compute weighted loss using Huber Loss (smooth_l1_loss) instead of MSE
+        # Huber Loss is more robust to outliers than MSE
+        loss = (F.smooth_l1_loss(Q_expected, Q_targets, reduction='none') * is_weights).mean()
 
         # Minimize the loss
         self.optimizer.zero_grad()
         loss.backward()
 
+        # Check gradients (example for the first conv layer)
+        if self.t_step % 1000 == 0:  # Print every 1000 steps
+            grad_mean = self.q_net.conv[0].weight.grad.abs().mean().item()
+            q_mean = Q_expected.mean().item()
+            q_min = Q_expected.min().item()
+            q_max = Q_expected.max().item()
+            print(f"Step {self.t_step}: Mean abs grad (conv0): {grad_mean:.6f}")
+            print(f"Step {self.t_step}: Q values - Mean: {q_mean:.4f}, Min: {q_min:.4f}, Max: {q_max:.4f}")
+            if grad_mean < 1e-6:
+                print("Warning: Gradients are very small or zero!")
+
+            # Check weights before and after update
+            conv0_weight_before = self.q_net.conv[0].weight.data.clone()
+
         # Gradient clipping to prevent exploding gradients
         # Increased from 1.0 to 10.0 for Atari/Mario environments as recommended
         torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), 10.0)
         self.optimizer.step()
+
+        # Check if weights actually changed after optimizer step
+        if self.t_step % 1000 == 0:  # Same frequency as gradient check
+            if 'conv0_weight_before' in locals():
+                conv0_weight_after = self.q_net.conv[0].weight.data
+                weight_diff = (conv0_weight_after - conv0_weight_before).abs().mean().item()
+                print(f"Step {self.t_step}: Weight change after update: {weight_diff:.8f}")
+                if weight_diff < 1e-8:
+                    print("Warning: Weights barely changed after update!")
+
+        # Print detailed training information every 100 steps
+        if self.t_step % 100 == 0:
+            # Calculate statistics for Q values and TD errors
+            q_mean = Q_expected.mean().item()
+            q_min = Q_expected.min().item()
+            q_max = Q_expected.max().item()
+            q_std = Q_expected.std().item()
+
+            td_mean = np.mean(td_errors)
+            td_max = np.max(td_errors)
+
+            # Print detailed training information
+            print(f"\n===== Training Statistics at Step {self.t_step} =====")
+            print(f"Loss: {loss.item():.6f}")
+            print(f"Q-values - Mean: {q_mean:.4f}, Min: {q_min:.4f}, Max: {q_max:.4f}, Std: {q_std:.4f}")
+            print(f"TD Errors - Mean: {td_mean:.4f}, Max: {td_max:.4f}")
+
+            # Print weight update information if available
+            if 'weight_diff' in locals():
+                print(f"Weight Change: {weight_diff:.8f}")
+
+            # Print beta value (importance sampling)
+            print(f"PER Beta: {self.replay_buffer.beta:.4f}")
+            print("================================================\n")
 
         # Update priorities in the replay buffer
         # Add small constant epsilon to prevent priorities from becoming zero
@@ -277,9 +376,10 @@ class Dueling_NSTEP_DDQN_Agent:
                 'n_step_buffer': self.replay_buffer.n_step_buffer,
             }
             torch.save(buffer_state, buffer_path)
-            print(f"Replay buffer saved to {buffer_path}")
-        except Exception as e:
-            print(f"Warning: Failed to save replay buffer: {e}")
+            # 移除不必要的打印
+        except Exception:
+            # 移除不必要的打印
+            pass
 
     def load(self, path):
         """
@@ -325,7 +425,8 @@ class Dueling_NSTEP_DDQN_Agent:
                 if 'n_step_buffer' in buffer_state:
                     self.replay_buffer.n_step_buffer = buffer_state['n_step_buffer']
 
-                print(f"Replay buffer loaded from {buffer_path} with {self.replay_buffer.size} experiences")
-            except Exception as e:
-                print(f"Warning: Failed to load replay buffer: {e}")
-                print("Training will continue with an empty buffer.")
+                # 移除不必要的打印
+                pass
+            except Exception:
+                # 移除不必要的打印
+                pass

@@ -226,7 +226,7 @@ class PrioritizedReplayBuffer:
         """
         # Check if any of the inputs are None
         if state is None or next_state is None:
-            print("Warning: Attempted to add None state or next_state to buffer. Skipping.")
+            # 移除不必要的打印
             return
 
         try:
@@ -298,8 +298,9 @@ class PrioritizedReplayBuffer:
                     self.size = min(self.size + 1, self.capacity)
                     self.n_step_buffer.popleft()
 
-        except Exception as e:
-            print(f"Error adding experience to buffer: {e}")
+        except Exception:
+            # 移除不必要的打印
+            pass
 
     def sample(self, batch_size):
         """
@@ -318,7 +319,7 @@ class PrioritizedReplayBuffer:
         """
         # Check if we have enough experiences to sample
         if len(self) < batch_size:
-            print(f"Warning: Not enough experiences in buffer. Have {len(self)}, need {batch_size}.")
+            # 移除不必要的打印
             return None, None, None
 
         if self.tree.total_priority() == 0:
@@ -358,15 +359,16 @@ class PrioritizedReplayBuffer:
                         valid_idx_found = True
                         break
 
-                # If we still couldn't find a valid index, print a warning
+                # If we still couldn't find a valid index, skip this segment
                 if not valid_idx_found:
-                    print(f"Warning: Could not find valid index in segment {i}. Tree size: {self.tree.size}, Buffer size: {self.size}")
+                    # 移除不必要的打印
+                    pass
 
         # If we don't have enough indices after filtering, return None
         if len(indices) < batch_size // 2:  # If we have less than half the requested batch size
-            print(f"Warning: Not enough valid indices after filtering. Have {len(indices)}, need {batch_size}.")
+            # 移除不必要的打印
             if len(indices) == 0:
-                print("Error: No valid indices found.")
+                # 移除不必要的打印
                 return None, None, None
             # We'll continue with the indices we have, but the batch size will be smaller
 
@@ -394,9 +396,9 @@ class PrioritizedReplayBuffer:
 
         # If we don't have enough valid experiences, return None
         if len(valid_experiences) < batch_size // 2:  # If we have less than half the requested batch size
-            print(f"Warning: Only found {len(valid_experiences)} valid experiences out of {len(indices)} indices after filtering.")
+            # 移除不必要的打印
             if len(valid_experiences) == 0:
-                print("Error: No valid experiences found.")
+                # 移除不必要的打印
                 return None, None, None
 
         # Convert to tensors
@@ -439,14 +441,11 @@ class PrioritizedReplayBuffer:
             # Convert valid_weights to PyTorch tensor directly
             valid_weights = torch.FloatTensor(valid_weights).unsqueeze(1)  # Shape: (batch_size, 1)
 
-            # Print a warning if we're returning fewer experiences than requested
-            actual_batch_size = len(valid_experiences)
-            if actual_batch_size < batch_size:
-                print(f"Note: Returning {actual_batch_size} experiences instead of the requested {batch_size}.")
+            # 移除不必要的打印
 
             return (states, actions, rewards, next_states, dones, discounts), valid_indices, valid_weights
-        except Exception as e:
-            print(f"Error converting experiences to tensors: {e}")
+        except Exception:
+            # 移除不必要的打印
             return None, None, None
 
     def update_priority(self, idx, error):
@@ -459,7 +458,7 @@ class PrioritizedReplayBuffer:
         """
         # Check if idx is valid
         if idx < 0 or idx >= self.capacity:
-            print(f"Warning: Invalid index {idx} for update_priority. Skipping.")
+            # 移除不必要的打印
             return
 
         priority = self._get_priority(error)

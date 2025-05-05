@@ -18,8 +18,8 @@ class Agent(object):
         # Define state shape for Mario environment (4 stacked frames of 84x84 grayscale images)
         self.state_shape = (4, 84, 84, 1)
 
-        # Initialize Dueling Q-network
-        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n).to(self.device)
+        # Initialize Dueling Q-network with noisy networks enabled
+        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n, use_noisy_net=True).to(self.device)
 
         # Try to load the latest model weights
         self.model_loaded = False
@@ -43,10 +43,14 @@ class Agent(object):
 
     def _find_latest_model(self):
         """Find the latest model weights file in the checkpoints directory."""
-        # First, check for the n-step model file (highest priority)
+        # First, check for the noisy network model file (highest priority)
+        if os.path.exists("mario_dueling_nstep_noisy_qnet.pth"):
+            print("Found noisy network model file: mario_dueling_nstep_noisy_qnet.pth")
+            return "mario_dueling_nstep_noisy_qnet.pth"
+
+        # Then, check for the regular n-step model file
         if os.path.exists("mario_dueling_nstep_qnet.pth"):
             print("Found n-step model file: mario_dueling_nstep_qnet.pth")
-            # return "mario_dueling_nstep_ep8000.pth"
             return "mario_dueling_nstep_qnet.pth"
 
         # Check for n-step checkpoint files
@@ -267,6 +271,10 @@ class Agent(object):
             if state.max() > 1.0:
                 state = state / 255.0
 
+            # Reset noise for the noisy network (important for exploration during evaluation)
+            if self.action_count % 5 == 0:  # Reset noise periodically
+                self.q_net.reset_noise()
+
             # Get Q-values and select best action
             self.q_net.eval()
             q_values = self.q_net(state)
@@ -275,6 +283,6 @@ class Agent(object):
             # Print information about the state and action
             if self.action_count % 20 == 0:  # Print every 20 actions to avoid too much output
                 max_q = q_values.max().item()
-                # print(f"State shape: {state.shape}, Max Q-value: {max_q:.4f}, Selected action: {action}")
+                print(f"Using noisy network model. Max Q-value: {max_q:.4f}, Selected action: {action}")
 
             return action
