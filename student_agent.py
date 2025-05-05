@@ -18,12 +18,22 @@ class Agent(object):
         # Define state shape for Mario environment (4 stacked frames of 84x84 grayscale images)
         self.state_shape = (4, 84, 84, 1)
 
-        # Initialize Dueling Q-network with noisy networks enabled
-        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n, use_noisy_net=True).to(self.device)
+        # Flag to track if we're using noisy networks
+        self.use_noisy_net = False
 
-        # Try to load the latest model weights
-        self.model_loaded = False
+        # Find the model path first to determine if it's a noisy network model
         self.model_path = self._find_latest_model()
+
+        # Check if the model path contains "noisy" to determine if we should use Noisy Networks
+        if self.model_path and "noisy" in self.model_path.lower():
+            print("Detected Noisy Network model. Initializing network with Noisy layers...")
+            self.use_noisy_net = True
+
+        # Initialize Dueling Q-network with appropriate noisy network setting
+        self.q_net = DuelingMarioQNet(self.state_shape, self.action_space.n, use_noisy_net=self.use_noisy_net).to(self.device)
+
+        # Try to load the model weights
+        self.model_loaded = False
         if self.model_path:
             try:
                 # Load the model weights
@@ -33,6 +43,7 @@ class Agent(object):
                 self.q_net.load_state_dict(state_dict, strict=False)
                 self.model_loaded = True
                 print(f"Loaded model weights from {self.model_path}")
+                print(f"Using Noisy Networks: {self.use_noisy_net}")
             except Exception as e:
                 print(f"Error loading model: {e}")
         else:
@@ -173,10 +184,8 @@ class Agent(object):
         return None
 
     def act(self, observation):
-        # Print action count every 100 actions
+        # Increment action counter
         self.action_count += 1
-        # if self.action_count % 100 == 0:
-        #     print(f"Action count: {self.action_count}")
 
         # If no model is loaded, use random actions
         if not self.model_loaded:
@@ -191,40 +200,9 @@ class Agent(object):
             # Convert to tensor
             state = torch.from_numpy(observation).float()
 
-            # For the evaluation environment, we need to handle a specific format
-            # The error shows input shape [1, 240, 256, 3] which is [batch, height, width, channels]
-
-            # First, check if this is the format from the evaluation environment
-            if len(state.shape) == 4 and state.shape[1] == 240 and state.shape[2] == 256 and state.shape[3] == 3:
-                # This is the format from eval.py
-                # We need to create a tensor with exactly the same shape that was used during training
-                # The model expects input of shape [batch_size, 4, 84, 84]
-
-                # Create a new tensor with the correct shape
-                processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
-
-                # Extract features from the original state to fill the new tensor
-                # First, permute to [1, 3, 240, 256] to get channels first
-                rgb_state = state.permute(0, 3, 1, 2)
-
-                # Resize to [1, 3, 84, 84]
-                rgb_state = torch.nn.functional.interpolate(rgb_state, size=(84, 84), mode='bilinear', align_corners=False)
-
-                # Convert RGB to grayscale: 0.299 * R + 0.587 * G + 0.114 * B
-                gray_state = 0.299 * rgb_state[:, 0:1] + 0.587 * rgb_state[:, 1:2] + 0.114 * rgb_state[:, 2:3]
-
-                # Fill all 4 channels with the same grayscale image
-                processed_state[:, 0] = gray_state.squeeze(1)
-                processed_state[:, 1] = gray_state.squeeze(1)
-                processed_state[:, 2] = gray_state.squeeze(1)
-                processed_state[:, 3] = gray_state.squeeze(1)
-
-                # Replace the original state with the processed one
-                state = processed_state
-
-            # Handle our training environment format
-            elif len(state.shape) == 4 and state.shape[0] == 4:  # (4, 84, 84, 1) - stacked frames
-                # Create a new tensor with the correct shape
+            # Handle the standard training environment format (4, 84, 84, 1)
+            if len(state.shape) == 4 and state.shape[0] == 4 and state.shape[3] == 1:
+                # Create a new tensor with the correct shape for PyTorch (batch, channels, height, width)
                 processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
 
                 # Remove channel dimension and add batch dimension
@@ -237,52 +215,67 @@ class Agent(object):
                 # Replace the original state with the processed one
                 state = processed_state
 
-            # Handle other potential formats
-            elif len(state.shape) == 3 and state.shape[-1] == 3:  # (height, width, 3) - RGB image
-                # Create a new tensor with the correct shape
-                processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
-
-                # Convert to grayscale
-                rgb_state = state.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
-
-                # Resize if needed
-                if rgb_state.shape[2] != 84 or rgb_state.shape[3] != 84:
-                    rgb_state = torch.nn.functional.interpolate(rgb_state, size=(84, 84), mode='bilinear', align_corners=False)
-
-                # Convert to grayscale
-                gray_state = 0.299 * rgb_state[:, 0:1] + 0.587 * rgb_state[:, 1:2] + 0.114 * rgb_state[:, 2:3]  # [1, 1, 84, 84]
-
-                # Fill all 4 channels with the same grayscale image
-                processed_state[:, 0] = gray_state.squeeze(1)
-                processed_state[:, 1] = gray_state.squeeze(1)
-                processed_state[:, 2] = gray_state.squeeze(1)
-                processed_state[:, 3] = gray_state.squeeze(1)
-
-                # Replace the original state with the processed one
-                state = processed_state
-
             # If already in correct format [1, 4, 84, 84], no need to reshape
             elif len(state.shape) == 4 and state.shape[0] == 1 and state.shape[1] == 4 and state.shape[2] == 84 and state.shape[3] == 84:
                 # Already in the correct format
                 pass
+            else:
+                # For any other format, print a warning and try to adapt
+                print(f"Warning: Unexpected observation shape: {state.shape}. The evaluation environment should use the same wrappers as training.")
+
+                # Try to handle common cases
+                if len(state.shape) == 3 and state.shape[-1] == 3:  # Single RGB frame
+                    print("Detected single RGB frame. Converting to 4-stacked grayscale frames.")
+                    # Create tensor with correct shape
+                    processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
+
+                    # Convert RGB to grayscale and resize
+                    rgb_state = state.permute(2, 0, 1).unsqueeze(0)  # [1, 3, H, W]
+                    if rgb_state.shape[2] != 84 or rgb_state.shape[3] != 84:
+                        rgb_state = torch.nn.functional.interpolate(rgb_state, size=(84, 84), mode='bilinear', align_corners=False)
+
+                    # Convert to grayscale
+                    gray_state = 0.299 * rgb_state[:, 0:1] + 0.587 * rgb_state[:, 1:2] + 0.114 * rgb_state[:, 2:3]
+
+                    # Fill all 4 channels with the same grayscale image
+                    for i in range(4):
+                        processed_state[:, i] = gray_state.squeeze(1)
+
+                    state = processed_state
+                elif len(state.shape) == 4 and state.shape[0] == 1 and state.shape[-1] == 3:  # Batch of RGB frames
+                    print("Detected batch of RGB frames. Converting to 4-stacked grayscale frames.")
+                    # Create tensor with correct shape
+                    processed_state = torch.zeros(1, 4, 84, 84, device=self.device)
+
+                    # Convert RGB to grayscale and resize
+                    rgb_state = state.permute(0, 3, 1, 2)  # [1, 3, H, W]
+                    if rgb_state.shape[2] != 84 or rgb_state.shape[3] != 84:
+                        rgb_state = torch.nn.functional.interpolate(rgb_state, size=(84, 84), mode='bilinear', align_corners=False)
+
+                    # Convert to grayscale
+                    gray_state = 0.299 * rgb_state[:, 0:1] + 0.587 * rgb_state[:, 1:2] + 0.114 * rgb_state[:, 2:3]
+
+                    # Fill all 4 channels with the same grayscale image
+                    for i in range(4):
+                        processed_state[:, i] = gray_state.squeeze(1)
+
+                    state = processed_state
 
             # Normalize (if not already done)
-            # This normalization is done here in the agent, not in the network
             if state.max() > 1.0:
                 state = state / 255.0
 
-            # Reset noise for the noisy network (important for exploration during evaluation)
-            if self.action_count % 5 == 0:  # Reset noise periodically
-                self.q_net.reset_noise()
+            # Set network to evaluation mode
+            self.q_net.eval()
 
             # Get Q-values and select best action
-            self.q_net.eval()
             q_values = self.q_net(state)
             action = q_values.argmax().item()
 
-            # Print information about the state and action
-            if self.action_count % 20 == 0:  # Print every 20 actions to avoid too much output
+            # Print information about the state and action occasionally
+            if self.action_count % 20 == 0:
                 max_q = q_values.max().item()
-                print(f"Using noisy network model. Max Q-value: {max_q:.4f}, Selected action: {action}")
+                model_type = "Noisy Network" if self.use_noisy_net else "Standard"
+                print(f"Using {model_type} model. Max Q-value: {max_q:.4f}, Selected action: {action}")
 
             return action
