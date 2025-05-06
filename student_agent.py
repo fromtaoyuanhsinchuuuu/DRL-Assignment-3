@@ -59,9 +59,9 @@ class Agent(object):
         self.model_path = self._find_latest_model()
 
         # Check if the model path contains "noisy" to determine if we should use Noisy Networks
-        # if self.model_path and "noisy" in self.model_path.lower():
-        #     print("Detected Noisy Network model. Initializing network with Noisy layers...")
-        #     self.use_noisy_net = True
+        if self.model_path and "noisy" in self.model_path.lower():
+            print("Detected Noisy Network model. Initializing network with Noisy layers...")
+            self.use_noisy_net = True
 
         # Initialize Dueling Q-network with appropriate noisy network setting
         # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
