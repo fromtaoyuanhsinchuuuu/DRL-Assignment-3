@@ -63,6 +63,8 @@ class Agent(object):
             print("Detected Noisy Network model. Initializing network with Noisy layers...")
             self.use_noisy_net = True
 
+        self.use_noisy_net = False
+
         # Initialize Dueling Q-network with appropriate noisy network setting
         # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
         self.q_net = DuelingMarioQNet((4, 84, 84), self.action_space.n, use_noisy_net=self.use_noisy_net).to(self.device)
@@ -229,7 +231,7 @@ class Agent(object):
 
         return None
 
-    def get_action(self, state, use_epsilon=True):
+    def get_action(self, state, use_epsilon=False):
         """
         Select an action using either epsilon-greedy policy or Noisy Networks.
         Standard Noisy Net usage: Action selection is deterministic based on mean weights.
