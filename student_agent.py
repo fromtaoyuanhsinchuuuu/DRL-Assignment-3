@@ -229,7 +229,7 @@ class Agent(object):
 
         return None
 
-    def get_action(self, state, use_epsilon=False):
+    def get_action(self, state, use_epsilon=True):
         """
         Select an action using either epsilon-greedy policy or Noisy Networks.
         Standard Noisy Net usage: Action selection is deterministic based on mean weights.
