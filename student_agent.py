@@ -63,7 +63,7 @@ class Agent(object):
             print("Detected Noisy Network model. Initializing network with Noisy layers...")
             self.use_noisy_net = True
 
-        self.use_noisy_net = False
+        self.use_noisy_net = True
 
         # Initialize Dueling Q-network with appropriate noisy network setting
         # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
