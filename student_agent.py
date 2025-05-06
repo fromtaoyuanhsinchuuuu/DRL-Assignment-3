@@ -249,7 +249,7 @@ class Agent(object):
 
         # If NOT using Noisy Networks, use epsilon-greedy with 1% exploration rate
         if not self.use_noisy_net:
-            if use_epsilon and random.random() < 0.01:  # 1% chance of random action
+            if use_epsilon and random.random() < 0.0001:  # 1% chance of random action
                 random_action = random.randrange(self.action_space.n)
                 if DEBUG:
                     print(f"Using epsilon-greedy exploration: random action {random_action}")
