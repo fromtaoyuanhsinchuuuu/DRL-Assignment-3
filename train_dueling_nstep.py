@@ -7,6 +7,12 @@ from collections import deque
 import os
 import csv
 from tqdm import tqdm
+import config
+import gym
+import matplotlib
+import gym_super_mario_bros
+from nes_py.wrappers import JoypadSpace
+from frame_processor import create_frame_processor, reset_frame_processor
 
 # Action mapping for Super Mario Bros
 # 'A' button represents jump
@@ -26,73 +32,13 @@ COMPLEX_MOVEMENT = [
 ]
 
 # Import custom modules
-from env_configuration_preprocess import create_mario_env
 from dueling_nstep_agent import Dueling_NSTEP_DDQN_Agent
 import config
 
 # Matplotlib backend for headless environments
-import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 
-def render_episode(env, agent, episode_num, max_steps=1000, progress_bar=None):
-    """
-    Run a full episode of gameplay using the current agent policy without visual rendering.
-    This version is designed to work in headless environments.
-
-    Args:
-        env: The game environment
-        agent: The trained agent
-        episode_num: Current episode number (for display)
-        max_steps: Maximum steps to run
-        progress_bar: TQDM progress bar for printing messages
-    """
-    # Reset environment (old API format - returns just state)
-    state = env.reset()
-
-    # Initialize variables
-    done = False
-    total_reward = 0
-    step = 0
-    max_x_pos = 0
-
-    if progress_bar:
-        progress_bar.write(f"🎮 Running Episode {episode_num} (no visual rendering)...")
-
-    # Episode loop
-    while not done and step < max_steps:
-        # Select action using the agent's policy
-        action = agent.get_action(state)
-
-        # Take action in the environment (old API format - returns state, reward, done, info)
-        try:
-            next_state, reward, done, info = env.step(action)
-
-            # Track max x position
-            if isinstance(info, dict) and 'x_pos' in info:
-                max_x_pos = max(max_x_pos, info['x_pos'])
-
-        except Exception as e:
-            if progress_bar:
-                progress_bar.write(f"Environment step error: {e}")
-            # Use defaults
-            next_state = state
-            reward = -100
-            done = True
-            break
-
-        # Update state and metrics
-        state = next_state
-        total_reward += reward
-        step += 1
-
-        # Print progress every 100 steps
-        if step % 100 == 0 and progress_bar:
-            progress_bar.write(f"Episode {episode_num} - Step: {step}, Reward: {total_reward:.1f}, Max X: {max_x_pos}")
-
-    if progress_bar:
-        progress_bar.write(f"🎮 Episode {episode_num} complete. Steps: {step}, Reward: {total_reward:.1f}, Max X: {max_x_pos}")
-
-    return total_reward, step
+# Removed render_episode function since the environment doesn't support rendering
 
 def calculate_shaping_reward(info, action, episode, progress_bar,
                             episode_max_x, previous_life_this_episode,
@@ -228,16 +174,28 @@ def main():
     print(f"N-step value: {config.N_STEP}")
 
     # Create and configure the Super Mario Bros environment
-    env = create_mario_env()
+    env = gym_super_mario_bros.make('SuperMarioBros-v0')
+    env = JoypadSpace(env, COMPLEX_MOVEMENT)
 
-    # Get state shape and action size
-    state_shape = env.observation_space.shape
+    # Initialize frame processor for manual preprocessing
+    process_frame, obs_buffer, frame_stack = create_frame_processor(
+        device=config.DEVICE,
+        skip_frames=4
+    )
+
+    # Get raw state shape and action size
+    raw_state_shape = env.observation_space.shape
     action_size = env.action_space.n
-    print(f"State shape: {state_shape}, Action size: {action_size}")
+    print(f"Raw state shape: {raw_state_shape}, Action size: {action_size}")
 
-    # Create the agent
+    # Define the processed state shape that will be used by the network
+    # After preprocessing, we'll have 4 stacked frames of 84x84 grayscale images
+    processed_state_shape = (4, 84, 84)
+    print(f"Processed state shape: {processed_state_shape}")
+
+    # Create the agent with the processed state shape
     agent = Dueling_NSTEP_DDQN_Agent(
-        state_shape=state_shape,
+        state_shape=processed_state_shape,
         action_size=action_size,
         buffer_capacity=config.BUFFER_CAPACITY,
         batch_size=config.BATCH_SIZE,
@@ -424,7 +382,24 @@ def main():
 
     for episode in progress_bar:
         # Reset environment and get initial state (old API format - returns just state)
-        state = env.reset()
+        _ = env.reset()  # We don't need to store this raw state
+
+        # Reset frame processor for new episode
+        reset_frame_processor(obs_buffer, frame_stack)
+
+        # Process initial state - we'll need to collect multiple frames before we have a valid state
+        state = None
+        # We need to collect skip_frames frames before we have a valid state
+        for _ in range(4):  # Collect 4 frames to fill the buffer
+            # Use a NOOP action to collect frames
+            next_raw_state, _, _, _ = env.step(0)  # 0 is NOOP
+            processed_state = process_frame(next_raw_state)
+            if processed_state is not None:
+                state = processed_state
+
+        # If we still don't have a valid state, create a blank one
+        if state is None:
+            state = torch.zeros(1, 4, 84, 84, device=config.DEVICE)
 
         # Initialize tracking variables with default values
         episode_max_x = 0
@@ -446,12 +421,20 @@ def main():
             if done:  # Skip the rest of the episode if done
                 break
 
-            # Select action
+            # State is already processed and ready for the agent
             action = agent.get_action(state)
 
             # Take action in environment (old API format - returns state, reward, done, info)
             try:
-                next_state, reward, done, info = env.step(action)
+                next_raw_state, reward, done, info = env.step(action)
+
+                # Process the next state
+                processed_next_state = process_frame(next_raw_state)
+                if processed_next_state is not None:
+                    next_state = processed_next_state
+                else:
+                    # If we don't have enough frames yet, use the current state
+                    next_state = state
 
                 # Original reward for logging
                 original_reward = reward
@@ -511,7 +494,7 @@ def main():
             # soft update, update freq == 1
             if total_steps % config.TARGET_UPDATE_FREQ_STEP == 0:
                 # 移除不必要的打印
-                print("update target network")
+                print("Update target network!")
                 agent.update_target_network(update_type=config.TARGET_UPDATE_TYPE)
 
 
@@ -594,24 +577,8 @@ def main():
 
             progress_bar.write(progress_info)
 
-            # Render a full episode every 10 episodes to visualize agent's progress
-            if config.RENDER_EPISODES:
-                # Create a separate environment for rendering to avoid affecting training
-                render_env = create_mario_env()
-                render_reward, render_steps = render_episode(
-                    render_env,
-                    agent,
-                    episode,
-                    max_steps=config.MAX_STEPS_PER_EPISODE,
-                    progress_bar=progress_bar
-                )
-                render_env.close()
-
-                # Log the rendered episode performance
-                progress_bar.write(f"🎮 Rendered Episode {episode} Performance: Steps={render_steps}, Reward={render_reward:.2f}")
-
-                # Add a small delay to allow user to see the final frame
-                time.sleep(1.0)
+            # Skip rendering since the environment doesn't support render mode
+            pass
 
         # Save model periodically
         if episode % config.SAVE_FREQ_EPISODE == 0:

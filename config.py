@@ -9,7 +9,7 @@ NUM_EPISODES = 10000  # Mario needs more training episodes
 
 # Agent hyperparameters
 GAMMA = 0.99  # Discount factor
-LR = 3e-4  # Learning rate (increased from 1e-4 to 3e-4 for faster learning)
+LR = 1e-4  # Learning rate (increased from 1e-4 to 3e-4 for faster learning)
 TAU = 1e-3  # Soft update parameter (increased from 1e-4)
 N_STEP = 5  # Number of steps for N-step bootstrapping
 
@@ -29,14 +29,14 @@ PER_BETA_START = 0.4  # Initial importance sampling weight
 PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 
 # Training settings
-LEARNING_START_STEP = 100  # Steps to fill buffer before learning starts
+LEARNING_START_STEP = 10000  # Steps to fill buffer before learning starts
 TRAIN_FREQ_STEP = 3  # Train every 4 steps
-TARGET_UPDATE_FREQ_STEP = 3000  # Target network update frequency (reduced from 10000)
+TARGET_UPDATE_FREQ_STEP = 5000  # Target network update frequency (reduced from 10000)
 SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
 TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
 
 # Checkpoint settings
-LOAD_CHECKPOINT_EPISODE = 800  # Episode to load checkpoint from (0 = don't load)
+LOAD_CHECKPOINT_EPISODE = 850  # Episode to load checkpoint from (0 = don't load)
 RESTART_EPSILON = 0.25  # Epsilon value to use when restarting training
 
 # Model settings

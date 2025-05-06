@@ -6,79 +6,10 @@ import random
 import os
 from dueling_qnet import DuelingMarioQNet
 import config
-from collections import deque
+from frame_processor import create_frame_processor, reset_frame_processor
 
 # Debug flag - set to True to enable debug messages, False to disable
 DEBUG = False
-
-# --- 新增的預處理函數，包含幀跳過和取最大值模擬 ---
-def preprocess_frame(raw_frame, obs_buffer, frame_stack, device, skip=4):
-    """
-    Preprocess a single raw observation frame, simulating frame skipping and max pooling.
-    This function is called for each raw frame received from the environment.
-    Args:
-        raw_frame: The raw observation frame from the environment (e.g., RGB 240x256x3).
-        obs_buffer: Deque to store the last 2 raw frames for max pooling.
-        frame_stack: Deque to store the last 4 processed (84x84 grayscale) frames.
-        device: Device to move tensors to.
-        skip: The frame skipping value (default: 4).
-    Returns:
-        torch.Tensor or None: Processed and stacked observation tensor (1, 4, 84, 84)
-                               if a new stacked frame is generated, otherwise None.
-    """
-    # Convert raw_frame to numpy array if needed
-    if hasattr(raw_frame, '__array__'):
-        raw_frame = np.array(raw_frame)
-
-    # Add the current raw frame to the observation buffer
-    obs_buffer.append(raw_frame)
-
-    # Only process and stack frames every 'skip' steps
-    if len(obs_buffer) == skip:
-        # Take the maximum over the last 2 frames in the buffer
-        # Even though we're storing up to 'skip' frames, we only take max over the last 2
-        # This matches the behavior of MaxAndSkipEnv in the training environment
-        if len(obs_buffer) >= 2:
-            max_frame = np.maximum(obs_buffer[-2], obs_buffer[-1])
-        else:
-            # Should not happen if skip >= 2, but handle defensively
-            max_frame = obs_buffer[-1]
-
-        # Convert the max_frame (RGB) to tensor
-        rgb_tensor = torch.from_numpy(max_frame).float()
-
-        # Convert RGB to PyTorch format (channels first) and add batch dimension
-        rgb_tensor = rgb_tensor.permute(2, 0, 1).unsqueeze(0)  # [1, 3, 240, 256]
-
-        # Resize to [1, 3, 84, 84]
-        rgb_tensor = torch.nn.functional.interpolate(rgb_tensor, size=(84, 84), mode='bilinear', align_corners=False)
-
-        # Convert RGB to grayscale: 0.299 * R + 0.587 * G + 0.114 * B
-        gray_tensor = 0.299 * rgb_tensor[:, 0:1] + 0.587 * rgb_tensor[:, 1:2] + 0.114 * rgb_tensor[:, 2:3]
-
-        # Convert to numpy array and remove batch and channel dimensions
-        current_processed_frame = gray_tensor.squeeze().cpu().numpy()  # Shape: (84, 84)
-
-        # Add the current processed frame to the frame stack
-        frame_stack.append(current_processed_frame)
-
-        # Clear the observation buffer after processing
-        obs_buffer.clear()
-
-        # Create a tensor with the correct shape for PyTorch (batch, channels, height, width)
-        stacked_state = torch.zeros(1, 4, 84, 84, device=device)
-
-        # Fill the tensor with the frames from the frame stack
-        for i, frame in enumerate(frame_stack):
-            stacked_state[0, i] = torch.from_numpy(frame).float()
-
-        # Normalize
-        stacked_state = stacked_state / 255.0
-
-        return stacked_state.to(device)
-    else:
-        # If not enough frames for skipping, return None
-        return None
 
 # Define the COMPLEX_MOVEMENT action space for Super Mario Bros
 # This is the same as gym_super_mario_bros.actions.COMPLEX_MOVEMENT
@@ -115,17 +46,14 @@ class Agent(object):
         # Flag to track if we're using noisy networks
         self.use_noisy_net = False
 
-        # --- 新增：用於模擬幀跳過和取最大值的緩衝區和計數器 ---
+        # --- 使用 frame_processor 模組初始化幀處理器 ---
         self.skip_frames = 4 # 與 MaxAndSkipEnv 中的 skip 值一致
-        self.obs_buffer = deque(maxlen=self.skip_frames) # 存儲最近 skip_frames 幀原始觀察用於取最大值
-        self.frame_stack = deque(maxlen=4) # 存儲最近 4 幀處理後的灰度圖 (84x84)
+        self.process_frame, self.obs_buffer, self.frame_stack = create_frame_processor(
+            device=self.device,
+            skip_frames=self.skip_frames
+        )
         self._current_action = 0 # 存儲在幀跳過期間重複的動作
         self._last_processed_state = None # 存儲上次生成的堆疊狀態
-
-        # Initialize frame stack with blank frames
-        blank_frame_84x84 = np.zeros((84, 84), dtype=np.float32)
-        for _ in range(4):
-            self.frame_stack.append(blank_frame_84x84)
 
         # Find the model path first to determine if it's a noisy network model
         self.model_path = self._find_latest_model()
@@ -331,8 +259,7 @@ class Agent(object):
         self.q_net.eval()
 
         try:
-            # For get_action, we assume the state is already preprocessed
-            # Convert to tensor if it's a numpy array
+            # --- 統一將輸入轉換為 PyTorch 張量並移動到設備 ---
             if isinstance(state, np.ndarray):
                 # Handle the standard training environment format (4, 84, 84, 1)
                 if len(state.shape) == 4 and state.shape[0] == 4 and state.shape[3] == 1:
@@ -342,7 +269,8 @@ class Agent(object):
                     state_tensor = state_tensor.squeeze(-1)  # Shape: (4, 84, 84)
                     # Add batch dimension
                     state_tensor = state_tensor.unsqueeze(0)  # Shape: (1, 4, 84, 84)
-                    # Normalize
+                    # Normalize for inference
+                    # This ensures the state is in the same range [0, 1] as during training
                     state_tensor = state_tensor / 255.0
                 else:
                     # For other formats, use the last processed state if available
@@ -366,6 +294,46 @@ class Agent(object):
                     else:
                         # Create a blank state as fallback
                         state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
+            elif hasattr(state, '__array__'):
+                # Check if the state is a PyTorch tensor and on CUDA
+                if isinstance(state, torch.Tensor) and state.device.type == 'cuda':
+                    # Already a CUDA tensor, just ensure it's in the right format
+                    if state.dim() == 3 and state.shape[0] == 4:
+                        state_tensor = state.unsqueeze(0)  # Add batch dimension
+                    elif state.dim() == 4 and state.shape[0] == 1 and state.shape[1] == 4:
+                        state_tensor = state  # Already in the right format
+                    else:
+                        # Use last processed state as fallback
+                        if self._last_processed_state is not None:
+                            state_tensor = self._last_processed_state
+                        else:
+                            state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
+                else:
+                    # Convert to NumPy and then to tensor
+                    try:
+                        state_np = np.array(state)
+                        if len(state_np.shape) == 4 and state_np.shape[0] == 4 and state_np.shape[3] == 1:
+                            # Standard format (4, 84, 84, 1)
+                            state_tensor = torch.from_numpy(state_np).float()
+                            state_tensor = state_tensor.squeeze(-1)  # Remove channel dimension
+                            state_tensor = state_tensor.unsqueeze(0)  # Add batch dimension
+                            # Normalize for inference
+                            # This ensures the state is in the same range [0, 1] as during training
+                            state_tensor = state_tensor / 255.0
+                        else:
+                            # Use last processed state as fallback
+                            if self._last_processed_state is not None:
+                                state_tensor = self._last_processed_state
+                            else:
+                                state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
+                    except Exception as e:
+                        if DEBUG:
+                            print(f"Error converting state to NumPy: {e}")
+                        # Use last processed state as fallback
+                        if self._last_processed_state is not None:
+                            state_tensor = self._last_processed_state
+                        else:
+                            state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
             else:
                 # For other types, use the last processed state if available
                 if self._last_processed_state is not None:
@@ -373,6 +341,9 @@ class Agent(object):
                 else:
                     # Create a blank state as fallback
                     state_tensor = torch.zeros(1, 4, 84, 84, device=self.device)
+
+            # Ensure the tensor is on the correct device
+            state_tensor = state_tensor.to(self.device)
 
             # Get Q values from the network (in eval mode, uses mean weights)
             with torch.no_grad():
@@ -424,31 +395,28 @@ class Agent(object):
         # 1. The observation is a full RGB frame (240, 256, 3)
         # 2. The action count is 1 or the observation is significantly different from previous frames
         if hasattr(observation, '__array__'):
-            obs_array = np.array(observation)
+            # Handle CUDA tensors properly
+            if isinstance(observation, torch.Tensor) and observation.device.type == 'cuda':
+                # Move to CPU before converting to NumPy
+                obs_array = observation.cpu().numpy()
+            else:
+                # Otherwise, convert to NumPy directly
+                obs_array = np.array(observation)
+
             if len(obs_array.shape) == 3 and obs_array.shape[0] == 240 and obs_array.shape[1] == 256 and obs_array.shape[2] == 3:
                 # Check if this is the first action or if the observation is very different
                 if self.action_count == 1 or (len(self.obs_buffer) > 0 and
-                   np.mean(np.abs(obs_array - self.obs_buffer[-1])) > 50):  # Threshold for difference
+                   np.mean(np.abs(obs_array - np.array(self.obs_buffer[-1]))) > 50):  # Threshold for difference
                     # Reset buffers for new episode
                     if DEBUG:
                         print("Detected new episode, resetting buffers")
-                    self.obs_buffer.clear()
-                    # Reset frame stack with blank frames
-                    self.frame_stack.clear()
-                    blank_frame = np.zeros((84, 84), dtype=np.float32)
-                    for _ in range(4):
-                        self.frame_stack.append(blank_frame)
+                    # Use the reset_frame_processor function to reset buffers
+                    reset_frame_processor(self.obs_buffer, self.frame_stack)
 
-        # Process the current raw observation frame
+        # Process the current raw observation frame using our frame processor
         # This function will add to obs_buffer and frame_stack internally
         # It returns a new stacked state only when 'skip' frames have been processed
-        new_stacked_state = preprocess_frame(
-            observation,
-            self.obs_buffer,
-            self.frame_stack,
-            self.device,
-            skip=self.skip_frames
-        )
+        new_stacked_state = self.process_frame(observation)
 
         # If a new stacked state was generated (i.e., after 'skip' raw frames)
         if new_stacked_state is not None:

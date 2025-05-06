@@ -1,13 +1,5 @@
 # env_configuration_preprocess.py
 import config
-import numpy as np
-from gym_compatibility import (
-    CompatibleGrayScaleObservation,
-    CompatibleResizeObservation,
-    CompatibleFrameStack
-)
-
-# 導入 gym
 import gym
 # 移除不必要的打印
 # print("Using custom compatible wrappers for gym")
@@ -117,13 +109,10 @@ class OldAPIWrapper(gym.Wrapper):
     """
     A final wrapper to ensure the environment always returns 4 values from step().
     This helps maintain consistency with the old Gym API format.
-    Also handles rendering based on the stored render_mode.
     """
     def __init__(self, env):
         super(OldAPIWrapper, self).__init__(env)
         self.done = False
-        # Get the render_mode from the unwrapped environment if it exists
-        self.render_mode = getattr(env.unwrapped, 'render_mode', None)
 
     def step(self, action):
         """Ensure step always returns 4 values (old Gym API format)."""
@@ -159,10 +148,6 @@ class OldAPIWrapper(gym.Wrapper):
             self.done = done
             self.last_obs = obs
 
-            # Render if render_mode is set to 'human'
-            if self.render_mode == 'human':
-                self.render()
-
             # Return 4 values (old Gym API format)
             return obs, reward, done, info
 
@@ -190,11 +175,6 @@ class OldAPIWrapper(gym.Wrapper):
                 obs = result
 
             self.last_obs = obs
-
-            # Render if render_mode is set to 'human'
-            if self.render_mode == 'human':
-                self.render()
-
             return obs
 
         except Exception as e:
@@ -205,33 +185,12 @@ class OldAPIWrapper(gym.Wrapper):
             self.last_obs = blank_obs
             return blank_obs
 
-    def render(self, mode=None):
-        """
-        Render the environment.
-        If self.render_mode is set, use that as the default mode.
-        """
-        # Use the stored render_mode if mode is not specified
-        render_mode = mode if mode is not None else self.render_mode
-
-        if render_mode:
-            try:
-                return self.env.render(mode=render_mode)
-            except Exception as e:
-                print(f"Error in render: {e}")
-                try:
-                    # Try without mode parameter for older gym versions
-                    return self.env.render()
-                except Exception as e2:
-                    print(f"Error in fallback render: {e2}")
-        return None
-
 def create_mario_env(render_mode=None):
     """
     Create and configure the Super Mario Bros environment with necessary preprocessing.
 
     Args:
         render_mode: Optional render mode (e.g., 'human' for visualization)
-                    This is stored but not directly passed to make() due to compatibility issues
 
     Returns:
         env: The preprocessed environment ready for training.
@@ -239,11 +198,10 @@ def create_mario_env(render_mode=None):
     try:
         # Create the base environment
         # SuperMarioBros-v0 provides 240x256x3 RGB image observation space
-        # Don't pass render_mode to make() as older versions don't support it
-        env = gym_super_mario_bros.make(config.ENV)
-
-        # Store render_mode for later use
-        env.render_mode = render_mode
+        if render_mode:
+            env = gym_super_mario_bros.make(config.ENV, render_mode=render_mode)
+        else:
+            env = gym_super_mario_bros.make(config.ENV)
 
         # Wrap the environment to use the COMPLEX_MOVEMENT action space (12 actions)
         env = JoypadSpace(env, COMPLEX_MOVEMENT)

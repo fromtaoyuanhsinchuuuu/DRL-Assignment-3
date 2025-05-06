@@ -119,32 +119,48 @@ class Dueling_NSTEP_DDQN_Agent:
         self.q_net.eval()
 
         try:
-            # Convert state to tensor
-            # Handle LazyFrames from FrameStack wrapper
-            if hasattr(state, '__array__'):
-                state = np.array(state)
+            # --- 統一將輸入轉換為 PyTorch 張量並移動到設備 ---
+            if isinstance(state, np.ndarray):
+                state_tensor = torch.from_numpy(state).float()
+            elif isinstance(state, torch.Tensor):
+                # If it's already a tensor, make a copy to ensure it's float type
+                state_tensor = state.float()
+                # If the tensor is on CUDA, we don't need to do anything special here
+            elif hasattr(state, '__array__'):
+                # Check if the state is a PyTorch tensor and on CUDA
+                if isinstance(state, torch.Tensor) and state.device.type == 'cuda':
+                    # Move to CPU before converting to NumPy
+                    state_tensor = state.float()  # Ensure it's float type
+                else:
+                    # Otherwise, convert to NumPy and then to tensor
+                    state_tensor = torch.from_numpy(np.array(state)).float()
+            else:
+                # Handle unexpected types, maybe return a blank state or raise error
+                print(f"Warning: Unexpected state type: {type(state)}")
+                # Fallback to a blank state
+                state_tensor = torch.zeros((4, 84, 84)).float()  # Assuming state shape is (4, 84, 84)
 
             # Validate state shape
-            if len(state.shape) == 4:
+            if state_tensor.dim() == 4 and state_tensor.shape[3] == 1:
                 # Expected shape: (frames, height, width, channels)
-                assert state.shape[0] == 4, f"Expected 4 stacked frames, got {state.shape[0]}"
-                assert state.shape[3] == 1, f"Expected channel dimension to be 1, got {state.shape[3]}"
+                assert state_tensor.shape[0] == 4, f"Expected 4 stacked frames, got {state_tensor.shape[0]}"
+                # Remove the channel dimension (which is 1)
+                state_tensor = state_tensor.squeeze(-1)
 
-            state = torch.from_numpy(state).float()
+            # Add batch dimension if needed
+            if state_tensor.dim() == 3:
+                state_tensor = state_tensor.unsqueeze(0)  # Add batch dimension
 
-            # Reshape from (frames, height, width, channels) to (batch_size, frames, height, width)
-            # First, remove the channel dimension (which is 1)
-            state = state.squeeze(-1)
-            # Then add batch dimension
-            state = state.unsqueeze(0)
-            # Normalize
-            state = state / 255.0  # Normalization is done here in the agent, not in the network
-            # Move to device
-            state = state.to(self.device)
+            # Normalize for inference
+            # This ensures the state is in the same range [0, 1] as during training
+            state_tensor = state_tensor / 255.0
+
+            # Ensure the tensor is on the correct device
+            state_tensor = state_tensor.to(self.device)
 
             # Get Q values from the network (in eval mode, uses mean weights)
             with torch.no_grad():
-                q_values = self.q_net(state)
+                q_values = self.q_net(state_tensor)
 
                 # 打印 Q 值分布信息 (每 100 步打印一次)
                 if self.t_step % 100 == 0:
@@ -167,6 +183,10 @@ class Dueling_NSTEP_DDQN_Agent:
                     print()  # 空行分隔
 
             return q_values.argmax().item()
+        except Exception as e:
+            print(f"Error in get_action: {e}")
+            # Return a random action as fallback
+            return random.randrange(self.action_size)
         finally:
             # Restore network mode
             if was_training:
