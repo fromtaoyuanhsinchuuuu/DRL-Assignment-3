@@ -63,7 +63,6 @@ class Agent(object):
             print("Detected Noisy Network model. Initializing network with Noisy layers...")
             self.use_noisy_net = True
 
-        self.use_noisy_net = True
 
         # Initialize Dueling Q-network with appropriate noisy network setting
         # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
@@ -249,13 +248,12 @@ class Agent(object):
         if not self.model_loaded:
             return random.randrange(self.action_space.n)
 
-        # If NOT using Noisy Networks, use epsilon-greedy with 1% exploration rate
-        if not self.use_noisy_net:
-            if use_epsilon and random.random() < 0.0001:  # 1% chance of random action
-                random_action = random.randrange(self.action_space.n)
-                if DEBUG:
-                    print(f"Using epsilon-greedy exploration: random action {random_action}")
-                return random_action
+        if use_epsilon and random.random() < 0.01:  # 1% chance of random action
+            random_action = random.randrange(self.action_space.n)
+            if DEBUG:
+                print(f"Using epsilon-greedy exploration: random action {random_action}")
+            print("use random")
+            return random_action
 
         # Remember current network mode
         was_training = self.q_net.training
