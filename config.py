@@ -32,7 +32,7 @@ PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 LEARNING_START_STEP = 10000  # Steps to fill buffer before learning starts
 TRAIN_FREQ_STEP = 2  # Train every 4 steps
 TARGET_UPDATE_FREQ_STEP = 4000  # Target network update frequency (reduced from 10000)
-SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
+SAVE_FREQ_EPISODE = 10  # Save model every 50 episodes
 TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
 
 # Checkpoint settings
