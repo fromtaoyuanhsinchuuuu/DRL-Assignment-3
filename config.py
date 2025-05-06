@@ -30,13 +30,13 @@ PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 
 # Training settings
 LEARNING_START_STEP = 10000  # Steps to fill buffer before learning starts
-TRAIN_FREQ_STEP = 4  # Train every 4 steps
-TARGET_UPDATE_FREQ_STEP = 5000  # Target network update frequency (reduced from 10000)
+TRAIN_FREQ_STEP = 2  # Train every 4 steps
+TARGET_UPDATE_FREQ_STEP = 4000  # Target network update frequency (reduced from 10000)
 SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
 TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
 
 # Checkpoint settings
-LOAD_CHECKPOINT_EPISODE = 1050  # Episode to load checkpoint from (0 = don't load)
+LOAD_CHECKPOINT_EPISODE = 1100  # Episode to load checkpoint from (0 = don't load)
 RESTART_EPSILON = 0.25  # Epsilon value to use when restarting training
 
 # Model settings
@@ -44,7 +44,7 @@ MODEL_SAVE_PATH = 'mario_ddqn_per_qnet.pth'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- Reward Shaping Parameters ---
-PROGRESS_WEIGHT = 0.2       # Increased from 0.3 to 1.0 - Reward per unit of X position increase
+PROGRESS_WEIGHT = 0.3       # Increased from 0.3 to 1.0 - Reward per unit of X position increase
 LIFE_LOSS_PENALTY = -300    # Increased from -50 to -100 - Penalty for losing a life
 TIME_PENALTY_PER_STEP = -0.01 # Increased from -0.01 to -0.05 - Small penalty for each step
 
