@@ -59,9 +59,9 @@ class Agent(object):
         self.model_path = self._find_latest_model()
 
         # Check if the model path contains "noisy" to determine if we should use Noisy Networks
-        if self.model_path and "noisy" in self.model_path.lower():
-            print("Detected Noisy Network model. Initializing network with Noisy layers...")
-            self.use_noisy_net = True
+        # if self.model_path and "noisy" in self.model_path.lower():
+        #     print("Detected Noisy Network model. Initializing network with Noisy layers...")
+        #     self.use_noisy_net = True
 
         # Initialize Dueling Q-network with appropriate noisy network setting
         # Note: The input shape to the network is (4, 84, 84) after preprocessing and stacking
@@ -249,7 +249,7 @@ class Agent(object):
 
         # If NOT using Noisy Networks, use epsilon-greedy with 1% exploration rate
         if not self.use_noisy_net:
-            if use_epsilon and random.random() < 0.05:  # 1% chance of random action
+            if use_epsilon and random.random() < 0.01:  # 1% chance of random action
                 random_action = random.randrange(self.action_space.n)
                 if DEBUG:
                     print(f"Using epsilon-greedy exploration: random action {random_action}")
