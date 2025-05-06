@@ -247,10 +247,13 @@ class Agent(object):
         if not self.model_loaded:
             return random.randrange(self.action_space.n)
 
-        # If NOT using Noisy Networks, use epsilon-greedy
+        # If NOT using Noisy Networks, use epsilon-greedy with 1% exploration rate
         if not self.use_noisy_net:
-            if use_epsilon and random.random() < 0.01:  # Small chance of random action
-                return random.randrange(self.action_space.n)
+            if use_epsilon and random.random() < 0.001:  # 1% chance of random action
+                random_action = random.randrange(self.action_space.n)
+                if DEBUG:
+                    print(f"Using epsilon-greedy exploration: random action {random_action}")
+                return random_action
 
         # Remember current network mode
         was_training = self.q_net.training
@@ -421,37 +424,24 @@ class Agent(object):
         # If a new stacked state was generated (i.e., after 'skip' raw frames)
         if new_stacked_state is not None:
             self._last_processed_state = new_stacked_state # Store the new state
-            # Set network to evaluation mode for deterministic action selection
-            was_training = self.q_net.training
-            self.q_net.eval()
 
             try:
-                # Get Q values from the network
-                with torch.no_grad():
-                    q_values = self.q_net(self._last_processed_state)
-                    # Select the action with the highest Q value
-                    self._current_action = q_values.argmax().item()
+                # Use get_action method for consistency
+                # This will handle epsilon-greedy exploration and network inference
+                self._current_action = self.get_action(self._last_processed_state, use_epsilon=True)
 
-                    # Print Q-value information occasionally
-                    if DEBUG and self.action_count % (self.skip_frames * 10) == 0: # Print less often
-                        q_numpy = q_values.cpu().numpy()[0]
-                        max_q_idx = np.argmax(q_numpy)
-                        model_type = "Noisy Network" if self.use_noisy_net else "Standard"
-                        print(f"Using {model_type} model. Max Q-value: {q_numpy[max_q_idx]:.4f}")
-                        try:
-                            action_desc = '+'.join(COMPLEX_MOVEMENT[max_q_idx])
-                            print(f"Selected action: {max_q_idx} ({action_desc})")
-                        except:
-                            print(f"Selected action: {max_q_idx}")
+                # Print action information occasionally
+                if DEBUG and self.action_count % (self.skip_frames * 10) == 0: # Print less often
+                    try:
+                        action_desc = '+'.join(COMPLEX_MOVEMENT[self._current_action])
+                        print(f"Selected action: {self._current_action} ({action_desc})")
+                    except:
+                        print(f"Selected action: {self._current_action}")
             except Exception as e:
                 if DEBUG:
-                    print(f"Error getting action from model: {e}")
-                # Fallback to random action if model inference fails
+                    print(f"Error in act() when calling get_action(): {e}")
+                # Fallback to random action if get_action fails
                 self._current_action = random.randrange(self.action_space.n)
-            finally:
-                # Restore network mode
-                if was_training:
-                    self.q_net.train()
 
         # Return the current action. This action will be repeated for 'skip' raw frames
         # until a new stacked state is generated and a new action is selected.

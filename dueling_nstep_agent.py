@@ -107,7 +107,7 @@ class Dueling_NSTEP_DDQN_Agent:
                 return random.randrange(self.action_size)
         # Even with Noisy Networks, occasionally force random actions to break out of local optima
         # This is a hybrid approach that combines Noisy Networks with occasional epsilon-greedy
-        elif use_epsilon and random.random() < 0.01:  # 1% chance of random action
+        elif use_epsilon and random.random() < 0.05:  # 1% chance of random action
             random_action = random.randrange(self.action_size)
             print(f"Forcing random exploration: action {random_action}")
             return random_action

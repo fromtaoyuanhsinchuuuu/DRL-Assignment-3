@@ -11,7 +11,7 @@ NUM_EPISODES = 10000  # Mario needs more training episodes
 GAMMA = 0.99  # Discount factor
 LR = 1e-4  # Learning rate (increased from 1e-4 to 3e-4 for faster learning)
 TAU = 1e-3  # Soft update parameter (increased from 1e-4)
-N_STEP = 5  # Number of steps for N-step bootstrapping
+N_STEP = 10  # Number of steps for N-step bootstrapping
 
 # Noisy Network settings
 USE_NOISY_NET = True  # Whether to use Noisy Networks for exploration
@@ -30,13 +30,13 @@ PER_BETA_FRAMES = 1000000  # Frames over which to anneal beta to 1.0
 
 # Training settings
 LEARNING_START_STEP = 10000  # Steps to fill buffer before learning starts
-TRAIN_FREQ_STEP = 3  # Train every 4 steps
+TRAIN_FREQ_STEP = 4  # Train every 4 steps
 TARGET_UPDATE_FREQ_STEP = 5000  # Target network update frequency (reduced from 10000)
 SAVE_FREQ_EPISODE = 50  # Save model every 50 episodes
 TARGET_UPDATE_TYPE = 'hard'  # 'soft', 'hard', or 'none'
 
 # Checkpoint settings
-LOAD_CHECKPOINT_EPISODE = 850  # Episode to load checkpoint from (0 = don't load)
+LOAD_CHECKPOINT_EPISODE = 1000  # Episode to load checkpoint from (0 = don't load)
 RESTART_EPSILON = 0.25  # Epsilon value to use when restarting training
 
 # Model settings
@@ -73,7 +73,7 @@ SPEED_BONUS_REWARD = 20     # Increased from 10 to 20 - Reward for moving quickl
 HEIGHT_EXPLORATION_REWARD = 0.5  # Increased from 0.2 to 0.5 - Reward multiplier for exploring higher y positions
 JUMP_ACTION_REWARD = 1.0    # Increased from 0.5 to 1.0 - Small reward for using jump actions
 STUCK_PENALTY = -1.0        # Increased from -0.3 to -1.0 - Penalty per step when Mario is stuck
-STUCK_STEPS_THRESHOLD = 10  # Decreased from 20 to 10 - Number of steps to consider Mario as "stuck"
+STUCK_STEPS_THRESHOLD = 20  # Decreased from 20 to 10 - Number of steps to consider Mario as "stuck"
 
 # Enable/disable specific reward shaping components
 USE_REWARD_SHAPING = True
@@ -81,8 +81,8 @@ USE_FLAG_BONUS = True
 USE_COIN_REWARD = True
 USE_ENEMY_DEFEAT_REWARD = True
 USE_SPEED_BONUS = True
-USE_HEIGHT_EXPLORATION = False  # Enabled to encourage exploration
-USE_JUMP_REWARD = False         # Enabled to encourage exploration
+USE_HEIGHT_EXPLORATION = True  # Enabled to encourage exploration
+USE_JUMP_REWARD = True         # Enabled to encourage exploration
 USE_STUCK_PENALTY = True
 
 # Visualization settings
